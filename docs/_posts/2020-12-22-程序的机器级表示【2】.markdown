@@ -173,6 +173,7 @@ x86-64中的mov类数据传送指令对以上各种复制要求都能满足。
 |||
 |--|--|
 |movabsq S,D|移动绝对四字到目的操作数|
+
 `movasbq`用于与`movq`匹配。作用是直接拷贝源操作数的64位到目标操作数。
 
 |MOVZ S,D|S->D|
@@ -182,6 +183,7 @@ x86-64中的mov类数据传送指令对以上各种复制要求都能满足。
 |movzwl|将零扩展的字拷贝到双字|
 |movzbq|将零扩展的字节拷贝到四字|
 |movzwq|将零扩展的字拷贝到四字|
+
 `MOVZ`指令执行零扩展拷贝。细心的同学可以发现，这里少了`movzlq`。这是因为在x86-64中，执行对寄存器的低32位赋值时，会自动将高32位置零，因此`movzlq`的效果等价于`movl`
 
 |MOVS S,D|S->D|
@@ -227,6 +229,7 @@ dest_t *dp;
 *dp = (dest_t) *sp;
 ```
 `src_t`与`dest_t`是通过`typedef`声明的数据类型，可以是char、int、unsigned等数据类型。假设用不同的数据类型对`src_t`和`dest_t`进行声明，变量sp与dp分别保存在寄存器%rdi和%rsi中，对应的汇编实现则如下：
+
 |src_t|dest_t|汇编|
 |--|--|--|
 |long|long|movq (%rdi),%rax<br>movq %rax,(%rsi)|
