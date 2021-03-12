@@ -7,7 +7,7 @@ categories: jekyll update
 [TOC]
 # External sort 
 
-本文介绍DBMS实现时常用的外部排序算法，以及如何进行聚合计算。
+本文介绍DBMS实现时常用的外部排序算法，以及如何进行聚合计算。·
 
 ## External sort
 外部排序即面向磁盘的排序算法，面向磁盘的排序算法性能度量核心是磁盘IO次数。
