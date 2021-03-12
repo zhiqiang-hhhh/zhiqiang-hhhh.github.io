@@ -1,10 +1,9 @@
 ---
 layout: post
-title:  "External sort and join algorithm"
+title:  "External sort and hash aggregate"
 date:   2021-03-11 19:20:11 +0800
 categories: jekyll update
 ---
-[TOC]
 # External sort 
 
 本文介绍DBMS实现时常用的外部排序算法，以及如何进行聚合计算。·
