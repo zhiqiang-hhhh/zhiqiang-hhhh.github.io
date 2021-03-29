@@ -1,0 +1,130 @@
+---
+layout: post
+title:  "C++对象模型之虚函数表"
+date:   2021-02-10 17:39:11 +0800
+categories: jekyll update
+---
+
+# 虚函数表
+虚函数表（Virtual function table）更加朴素的叫法应该是“虚函数指针数组”，顾名思义，**该数组内所有元素都是函数指针，这些指针指向该类的虚函数**。
+## 虚函数表的基本性质
+```c++
+class Base{
+public:
+    virtual void f(){cout<< "Base:f()" << endl;}
+    virtual void g(){cout<< "Base:g()" << endl;}
+    virtual void h(){cout<< "Base:h()" << endl;}
+};
+
+class Drive : public Base{
+public:
+    void g() override {cout<< "Drive::g()" << endl;}
+};
+```
+首先，我们这里定义了基类Base和派生类Drive，一个小细节是Drive覆盖了基类的虚函数`void g()`。
+现在我们希望去验证一下确实有虚函数表这个东西，可以这么做：
+```c++
+Base b{};
+Func** vft_pptr = reinterpret_cast<Func**>(&b);
+Func* vft_ptr = *vft_pptr;
+for (int i = 0; i < 3; ++i) {
+    printf("vft_base[%d] = 0x: %p\n", i, vft_ptr[i]);
+}
+
+for (int i = 0; i < 3; ++i) {
+    vft_ptr[i]();
+}
+```
+我们首先实例化了一个Base类。然后typedef了一个函数指针类型别名Func。既然虚函数表是一个虚函数指针数组，那么虚函数表就可以声明为`Func vft_base[0];`或者等价于`Func* vtf_base;`。对于具有虚函数表的类对象内存布局，其内存布局的第一个8字节保存的是一个指针，该指针指向这个类的虚函数表，称为虚函数表指针，可以声明为`Func* vtf_ptr;`，为了获得该指针的值，需要将b的地址转换为一个`Func**`类型，这样才能读取到这8个字节的值。
+
+随后第一个for循环打印出这个虚函数表中的每个元素的值，也就是所有虚函数的地址。既然我们找到了这些虚函数的地址，那么我们就可以正常调用这些函数。
+
+执行后的结果：
+```bash
+vptr_base[0] = 0x: 0x102b2a0a0
+vptr_base[1] = 0x: 0x102b2a0e0
+vptr_base[2] = 0x: 0x102b2a120
+Base:f()
+Base:g()
+Base:h()
+```
+
+验证所有Base类对象访问的虚函数表都是同一个：
+```c++
+Base b{};
+vft_ptr = reinterpret_cast<Func**>(&b);
+vft_base = *vft_ptr;
+for (int i = 0; i < 3; ++i) {
+    printf("vptr_base[%d] = %p\n", i, vft_base[i]);
+}
+
+for (int i = 0; i < 3; ++i) {
+    vft_base[i]();
+}
+
+Base b1{};
+vft_ptr = reinterpret_cast<Func**>(&b);
+vft_base = *vft_ptr;
+for (int i = 0; i < 3; ++i) {
+    printf("vptr_base[%d] = %p\n", i, vft_base[i]);
+}
+
+for (int i = 0; i < 3; ++i) {
+    vft_base[i]();
+}
+```
+```bash
+vptr_base[0] = 0x: 0x10c2d4090
+vptr_base[1] = 0x: 0x10c2d40d0
+vptr_base[2] = 0x: 0x10c2d4110
+Base:f()
+Base:g()
+Base:h()
+
+vptr_base[0] = 0x10c2d4090
+vptr_base[1] = 0x10c2d40d0
+vptr_base[2] = 0x10c2d4110
+Base:f()
+Base:g()
+Base:h()
+```
+这说明同一个类的对象共享同一个虚函数表。
+ 
+对象内存空间的第一个8字节保存的是指针，指向该类的虚函数表。
+
+## 继承关系下的虚函表
+对派生类我们还就内个故技重施，如下：
+```c++
+Drive d{};
+vft_ptr = reinterpret_cast<Func**>(&d);
+Func* vft_drive = *vft_ptr;
+for (int i = 0; i < 3; ++i) {
+    printf("vptr_drive[%d] = 0x: %p\n", i, vft_drive[i]);
+}
+
+for (int i = 0; i < 3; ++i) {
+    vft_drive[i]();
+}
+```
+两段代码重新一起执行：
+```bash
+vptr_base[0] = 0x: 0x10e6ff0a0
+vptr_base[1] = 0x: 0x10e6ff0e0
+vptr_base[2] = 0x: 0x10e6ff120
+Base:f()
+Base:g()
+Base:h()
+vptr_drive[0] = 0x: 0x10e6ff0a0
+vptr_drive[1] = 0x: 0x10e6ffcf0
+vptr_drive[2] = 0x: 0x10e6ff120
+Base:f()
+Drive::g()
+Base:h()
+```
+可以观察并总结出以下几点：
+1. f与h这俩没有被派生类覆盖的虚函数具有相同的地址，前者为`0x10e6ff0a0`后者为`0x10e6ff120`
+2. 基类和派生类的虚函数g具有不同的地址，基类的虚函数g地址位于f与h之间，这跟函数声明的顺序相同，派生类中的虚函数g地址则相对较远
+
+继承关系下的虚函数表还有一些其他性质，这里只列出来，不仔细验证了。
+1. 基类中有虚函数则派生类中也有虚函数，基类和派生类各自有各自的虚函数表（其中一些虚函数指针指向相同的地址）
+## 多重继承下的虚函数表
