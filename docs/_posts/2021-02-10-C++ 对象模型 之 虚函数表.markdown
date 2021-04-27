@@ -64,7 +64,7 @@ Base:g()
 Base:h()
 ```
 通过将变量B的内容reinterpret_cast为一个指向`func_ptr`的指针，然后解引用该指针，发现结果等于`vft_base[0]`。**这说明B对象的前8个字节确实保存的是指向虚函数表的指针**。最后的内存布局如下图所示。
-![picture 1](../../images/df96378b26c5d0405e36617686f7fa4f8ab49e8a965edd74736dd9046f669829.png)  
+<img src="./../images/df96378b26c5d0405e36617686f7fa4f8ab49e8a965edd74736dd9046f669829.png"/>
 
 **同一个类的所有对象共享一个虚函数表**。验证一下：
 ```c++
