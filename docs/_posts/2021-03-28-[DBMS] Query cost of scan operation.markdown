@@ -28,7 +28,7 @@ Assumption:
 3. Every nodes of b+-tree needs a random IO operation
 
 
-* Linear search.
+* Linear search. 
 DBMS scans each file block and tests all records to see whether they meet the predication. One initial seek takes $t_{S}$ seconds, and takes $b_{r}*t_{T}$ seconds for subsequent data block transferring. So overall cost is $t_{S} + b_{r}*t_{T}$
 
 * Clustering B+-tree Index, Equality on Key
@@ -44,13 +44,28 @@ Secondary index means physical sequence of key in database file is different fro
 Difference of record layout in database file between non-clustering index and clustering index matters in this situation. Because the records with quality on non-key may reside on multiple blocks, we need to do extral seek & transfer operations. Supposing we have $n$ records to be fetched, the total time cost is $(h_{i}+n)*(t_{T} + t+{S})$
 
 * Clustering B+tree Index, Comparison
-Selection of the form: $\sigma_{A\leq{V}}(r)$. For clustering b+tree index, it's easy to implement. First, look up the left most tuple that satisfies the comparison; then, linear search to find resting tuples. The cost estimate is identical to clustering b+-tree index with equality on non-key. $h_{i}*(t_{T}+t_{S} + t_{S} + b*t_{T}$
+Selection of the form: $\sigma_{A\leq{V}}(r)$. For clustering b+tree index, it's easy to implement. First, look up the left most tuple that satisfies the comparison; then, linear search to find resting tuples. The cost estimate is identical to clustering b+-tree index with equality on non-key. $h_{i}*(t_{T}+t_{S}) + t_{S} + b*t_{T}$
 
 * Secondary B+tree Index, Comparison
 The secondary index provides pointers to the records, but to get the actual records we have to fetch the records by using the pointers. This step may require an I/O operation for each record fetched, since consecutive records may be on different disk blocks; as before, each I/O operation requires a disk seek and a block transfer. If the number of retrieved records is large, using the secondary index may be even more expensive than using linear search. Therefore, the secondary index should be used only if very few records are selected. Total cost: $h_{i}*(t_{T}+t_{S}) + n*(t_{T}+t_{S})$. 这里假设只需要search一个leaf node.
 
-可以看到，对于Selection with comparison on secondary b+tree index 的情景，总的时间花费取决于我们最终获取了多少条记录。如果记录较多，那么使用secondary index的效率反而会比linear search的效率更低。
-对于这种情况，PostgreSQL中使用了一种混和算法：bitmap index scan。在构建secondary index时，该算法会创建一个bitmap，bit的位数等于database file中block的数量，所有的bit都被初始化为0。Selection过程中使用secondary index找到matching tuple的所有index entries，每当找到一个满足comparison的entry，那么就会把file中block number对应的bit设置为1。一旦bitmap建立完成，selection过程按照linear search遍历database file，跳过在bitmap中对应为0的block。这样最差情况（fetch所有记录）下只会比linear search多一点点访问bitmap的开销，但是在最好情况下会比linear search好很多。相比使用secondary index，最差情况下（只fetch一条记录），bitmap index只比使用secondary index差一点点（构建bitmap，记录位于database file最后);最好情况下（fetch所有记录），bitmap index好很多。
+可以看到，对于Selection with comparison on secondary b+tree index 的情景，总的时间花费取决于我们最终获取了多少条记录。如果记录较多，那么使用secondary index的效率反而会比linear search的效率更低（极端情况下所有block均需要访问，那么此时访问secondary index就是在浪费时间）。
+对于这种情况，PostgreSQL中使用了一种混和算法：bitmap index scan。该算法会创建一个bitmap，bit的位数等于database file中block的数量，所有的bit都被初始化为0。Selection过程中使用secondary index找到matching tuple的所有index entries，每当找到一个满足comparison的entry，那么就会把db file中block number对应的bitmap中的bit设置为1。bitmap建立完成后，selection过程按照linear search遍历db file，**跳过在bitmap中对应为0的block**。这样最差情况（fetch所有记录）下只会比linear search多一点点访问bitmap的开销，但是在最好情况下会比linear search好很多。相比使用secondary index，最差情况下（只fetch一条记录），bitmap index只比使用secondary index差一点点（构建bitmap，记录位于database file最后);最好情况下（fetch所有记录），bitmap index好很多。
 
-还有一种做法是使用基于sorting的算法。
+||Algorithm|Cost|Reason|
+|--|--|--|--|
+|A1|Linear search|$t_{S} + b_{r}*t_{T}$||
+|A2|Clustering B+-tree Index, Equality on Key|$(1 + h_{i})*(t_{S}+t_{T})$||
+|A3|Clustering B+-tree Index, Equality on Non-key|$h_{i}*(t_{T}+t_{S})+t_{S}+b*t_{T}$||
+|A4|Secondary B+-tree Index, Equality on key|$(h_{i} + 1)*(t_{S} + t_{T})$||
+|A5|Secondary B+-tree Index, Equality on Non-key|$(h_{i}+n)*(t_{T} + t+{S})$||
+|A6|Clustering B+-tree Index, Comparision|$h_{i}*(t_{T}+t_{S}) + t_{S} + b*t_{T}$||
+|A7|Secondary B+tree Index, Comparison|$h_{i}*(t_{T}+t_{S}) + n*(t_{T}+t_{S})$||
 
+Comparision与Equality对于获取数据的区别在于前者往往会返回一个范围内的数据，后者通常是返回一条数据。
+
+对于在聚集索引上的selection，不论是equality还是comparision条件，相比linear search总是开销更少；对于在secondary index上的selection，其开销取决于selectivity。
+### Complex Selection
+* Conjunctive selection：多个simple selection的并
+* Disjunctive selection：多个simple selection的或
+* Negation: 取反
