@@ -4,6 +4,7 @@ title:  "C++对象模型之虚函数表"
 date:   2021-02-10 17:39:11 +0800
 categories: jekyll update
 ---
+[TOC]
 
 # 虚函数表
 虚函数表（Virtual function table）更加朴素的叫法应该是“虚函数指针数组”，顾名思义，**该数组内所有元素都是函数指针，这些指针指向该类的虚函数**。
@@ -118,3 +119,129 @@ Base:h()
 
 
 ## 多重继承下的虚函数表
+当某个子类继承自多个基类时，子类会具有多个虚函数表，每个虚函数表对应一个基类，虚函数表内容与真正虚函数的对应关系与单继承时一样。
+
+```c++
+class Base1{
+public:
+    virtual void f(){
+        cout << "Base1::f()" << '\n';
+    }
+    virtual void g(){
+        cout << "Base1::g()" << '\n';
+    }
+};
+
+class Base2{
+    virtual void h(){
+        cout << "Base2::h()" << '\n';
+    }
+    virtual void j(){
+        cout << "Base2::j()" << '\n';
+    }
+};
+
+class Drive2 : public Base1, public Base2{
+    void f() override{
+        cout << "Drive2::f()" << '\n';
+    }
+    void h() override{
+        cout << "Drive2::h()" << '\n';
+    }
+    
+    virtual void A(){
+        cout << "Drive2::A()" << '\n';
+    }
+    virtual void B(){
+        cout << "Drive2::B()" << '\n';
+    }
+    virtual void C(){
+        cout << "Drive2::C()" << '\n';
+    }
+};
+
+Base1 b1{};
+Base2 b2{};
+Drive2 d2{};
+
+printf("Address of vft_base1: %p\n", *(reinterpret_cast<func_ptr**>(&b1)));
+printf("Address of vft_base2: %p\n", *(reinterpret_cast<func_ptr**>(&b2)));
+
+printf("Content of first 8 bytes of d2: %p\n", *(reinterpret_cast<func_ptr**>(&d2)));
+printf("Content of second 8 bytes of d2: %p\n", *(reinterpret_cast<func_ptr**>(&d2) + 1));
+```
+```bash
+Address of vft_base1: 0x7fe44daab1b8
+Address of vft_base2: 0x7fe44daab138
+
+Content of first 8 bytes of d2: 0x7fe44daab158
+Content of second 8 bytes of d2: 0x7fe44daab198
+```
+从这里可以看出，`Drive2`类的虚函数表地址与两个基类的不一样，我们再来检查这些虚函数表的内容。
+```c++
+printf("Content of vft of Base1:\n");
+for(int i = 0; i < 2; ++i){
+    func_ptr pf = (*reinterpret_cast<func_ptr**>(&b1))[i];
+    printf("vtf_Base1[%d]: %p\n", i, pf);
+    pf();
+}
+
+printf("Content of vft of Base2:\n");
+for(int i = 0; i < 2; ++i){
+    func_ptr pf = (*reinterpret_cast<func_ptr**>(&b2))[i];
+    printf("vtf_Base1[%d]: %p\n", i, pf);
+    pf();
+}
+```
+```bash
+Content of vft of Base1:
+vtf_Base1[0]: 0x7fe44daac170
+Base1::f()
+vtf_Base1[1]: 0x7fe44daac1d0
+Base1::g()
+Content of vft of Base2:
+vtf_Base1[0]: 0x7fe44daac230
+Base2::h()
+vtf_Base1[1]: 0x7fe44daac290
+Base2::j()
+```
+重点是`Drive2`的虚函数表：
+```c++
+printf("Content of vft_1 of Drive2:\n");
+for(int i = 0; i < 6; ++i){
+    func_ptr pf = (*reinterpret_cast<func_ptr**>(&d2))[i];
+    printf("vtf_1_drive2[%d]: %p\n", i, pf);
+    pf();
+}
+
+printf("Content of vft_2 of Drive2:\n");
+for(int i = 0; i < 2; ++i){
+    func_ptr pf = (*(reinterpret_cast<func_ptr**>(&d2) + 1))[i];
+    printf("vtf_2_drive2[%d]: %p\n", i, pf);
+    pf();
+}
+```
+```bash
+Content of vft_1 of Drive2:
+vtf_1_drive2[0]: 0x7fe44daac410
+Drive2::f()
+vtf_1_drive2[1]: 0x7fe44daac1d0
+Base1::g()
+vtf_1_drive2[2]: 0x7fe44daac470
+Drive2::h()
+vtf_1_drive2[3]: 0x7fe44daac2f0
+Drive2::A()
+vtf_1_drive2[4]: 0x7fe44daac350
+Drive2::B()
+vtf_1_drive2[5]: 0x7fe44daac3b0
+Drive2::C()
+Content of vft_2 of Drive2:
+vtf_2_drive2[0]: 0x7fe44daac4d0
+Drive2::h()
+vtf_2_drive2[1]: 0x7fe44daac290
+Base2::j()
+```
+通过图可以更加直观反映内存中此时虚函数表的内容。
+![picture 1](../../images/e10a849d170de626c1ec182168d94fd3995f6381aade088f51861725fce1a466.png)  
+
+比较奇怪的一点是不明白为什么`vtf_1_drive2`的第三项是一个指向`Drive2::h()`的指针，同样有`vtf_2_drive2`中第一项也指向`Drive2::h()`，但是两者地址不同。OS版本是`Debian GNU/Linux 10`，编译器为gcc。
