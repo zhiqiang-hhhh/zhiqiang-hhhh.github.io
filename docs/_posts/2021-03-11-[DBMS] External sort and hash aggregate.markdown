@@ -64,10 +64,14 @@ SELECT DISTINCT cid
 假设我们给buffer pool一共分配了B个内存块（每个内存块的大小并不一定就是一个磁盘page的大小）。与external sorting不太一样的一点是，我们需要留1个buffer pool page(bpp)用于保存输入数据（external sorting中留一个用于保存输出）。那么可用于保存hash结果的内存块为B-1个，所以设计hash函数的桶数量为B-1，我们对所有的输入tuple应用该hash函数，将tuple分配至B-1个partition内，partition是逻辑概念，对应一个bpp。输入bpp不断读入tuple，每当某个输出bpp满了以后，就将其全部内存flush到磁盘，并清空该bpp以迎接后续tuple。重复该过程直到所有tuple都被分入到某个partition内。
 
 以上过程是hashing aggregate的**第一阶段，称为partition过程**。
+![picture 1](../../images/75e15e31dd37c40d5b728c17864711fa5dcc9373fad35333b5fbee26b5ae8761.png)  
+
 
 partition过程结束后我们得到了B-1个逻辑partition，每个partition实际上可能会对应一个或者多个disk page。同时，考虑到B-1很可能是小于distinct tuple个数的，那么每个partition内都有可能具有多个不同的cid tuple。我们还需要**第二阶段rehash**继续进行处理。
 
 Partition阶段的一个重要保证是所有相同的cid都在同一个partition内。第二阶段rehash时，我们对所有partition应用另一个hash函数，得到一个临时hash表，该临时hash表内保存了该partition中的所有不同cid。当我们为所有partition都得到一个临时hash表后，我们需要做的就是将所有临时hash表合并，这样就得到了最终结果。
+![picture 2](../../images/35cbf8184489f291cf2d4e7d1032c9a1895f9a1020db8ec9644379013bc31fbd.png)  
+
 
 临时hash表的内容通常是`(GroupByKey -> RunningValue)`的形式，`Runningvalue`内容取决于具体的aggregate function。假如我们要计算的是count函数，那么`Runningvalue`就是counts，每当一个cid hits hash table，那么就将对应的 counts++；否则就在hash table中新增加一行。
 
