@@ -270,5 +270,3 @@ Block DDLQueryStatusInputStream::readImpl(){
 }
 ```
 `columns`就是提到的内存表。其内容则是根据Zookeeper中node的内容计算出来的结果。
-
-## Doris
