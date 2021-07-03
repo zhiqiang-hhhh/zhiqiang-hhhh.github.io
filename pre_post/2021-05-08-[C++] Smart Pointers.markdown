@@ -39,19 +39,15 @@ makeInvestment(Ts&&... params)
     std::unique_ptr<Investment, decltype(delInvmt)> // ptr to be
     pInv(nullptr, delInvmt); // returned
 
-    if ( /* a Stock object should be created */ )
-{
-pInv.reset(new Stock(std::forward<Ts>(params)...));
-}
-else if ( /* a Bond object should be created */ )
-{
-pInv.reset(new Bond(std::forward<Ts>(params)...));
-}
-else if ( /* a RealEstate object should be created */ )
-{
-pInv.reset(new RealEstate(std::forward<Ts>(params)...));
-}
-return pInv;
+    if ( /* a Stock object should be created */ ){
+        pInv.reset(new Stock(std::forward<Ts>(params)...));
+    } else if ( /* a Bond object should be created */ ) {
+        pInv.reset(new Bond(std::forward<Ts>(params)...));
+    } else if ( /* a RealEstate object should be created */ ) {
+        pInv.reset(new RealEstate(std::forward<Ts>(params)...));
+    }
+    
+    return pInv;
 }
 ```
 从裸指针到`unique_ptr`的隐式类型转换是不被允许的。
