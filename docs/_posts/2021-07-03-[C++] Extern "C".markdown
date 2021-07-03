@@ -1,3 +1,9 @@
+---
+layout: post
+title:  "[C++] Extern "C""
+date:   2021-07-03 19:28:11 +0800
+categories: jekyll update
+---
 # 关键字 Extren C
 ## 现象
 库文件的定义是Cpp文件，使用g++编译
