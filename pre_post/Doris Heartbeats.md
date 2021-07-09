@@ -64,3 +64,43 @@ service FrontendService{
 1. FE 何时调用 hearbeat 服务
 2. BE 信息是如何被加入到 FE 元数据中的
 
+```java
+    public void addBackends(String tenantName, String clusterName, List<Pair<String, Integer>> hosts, int shardId) throws UserException {
+    	// add backends to system info service to track heartbeat and report version info
+    	systemInfoService.addBackends(hosts, true, tenantName);
+    	CHTenant chTenant = nameToTenant.get(tenantName);
+    	...
+    	CHCluster chCluster = chTenant.getCluster(clusterName);
+    	...
+    	for (int i = 0; i < hosts.size(); ++i) {
+    	    Backend backend = systemInfoService.getBackendByHostPort(tenantName, hosts.get(i));
+    	    if (backend == null) {
+              throw new UserException("Could not find backend " + hosts.get(i));
+            }
+            chCluster.addBackendToShard(shardId, backend.getId());
+            editLog.logAddCHBackend(new BackendOpLog(tenantName, clusterName, backend.getId(), shardId));
+    	}
+    }
+
+    public void dropBackends(String tenantName, String clusterName, List<Pair<String, Integer>> hosts) throws UserException {
+    	// Not 
+    	CHTenant chTenant = nameToTenant.get(tenantName);
+    	if (chTenant == null) {
+    		throw new UserException("Tenant " + tenantName + " not exist");
+    	}
+    	CHCluster chCluster = chTenant.getCluster(clusterName);
+    	if (chCluster == null) {
+    		throw new UserException("Cluster " + clusterName + " not exist");
+    	}
+
+    	for (int i = 0; i < hosts.size(); ++i) {
+    		Backend backend = systemInfoService.getBackendByHostPort(tenantName, hosts.get(i));
+    		if (backend == null) {
+        		continue;
+    		}
+        	chCluster.dropBackend(backend.getId());
+        	// TODO(ygl) check if other cluster have this backend, if not then remove it from system info service
+        	editLog.logDropCHBackend(new BackendOpLog(tenantName, clusterName, backend.getId(), -1));
+        }
+    }
+```
