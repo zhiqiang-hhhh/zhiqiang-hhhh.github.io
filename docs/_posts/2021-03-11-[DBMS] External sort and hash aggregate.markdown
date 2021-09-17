@@ -12,14 +12,14 @@ categories: jekyll update
 ## External sort
 外部排序即面向磁盘的排序算法，面向磁盘的排序算法性能度量核心是磁盘IO次数。
 外部排序算法是一种基于分治思想的算法，由两个阶段组成：
-1. Sorting：将文件划分为可以被放进内存的文件块，然后利用内部排序算法对其排序，再将文件块写回磁盘，被写回的文件块被称为 run；
+1. Sorting：将数据划分为可以被放进内存的文件块，然后利用内部排序算法对其排序，再将文件块写回磁盘，被写回的文件块被称为 run；
 2. Merge：将排好序的segments合并成一个大文件。
 
 ### Two-way Merge Sort
-最简单的方法是两路归并排序。Two-way是指在归并阶段，该算法使用三“块”内存（buffer pool大小为3），同时读两个page，然后将这两个page合并的结果写入另一块用作保存输出的内存，当这块输出内存满了以后，其内容被写入磁盘，然后这块内存被清空，继续迭代这一过程，直到全部数据都被排好序。
+最简单的外部排序方法。Two-way 是指在 Merge 阶段，该算法共使用三“块”内存（3 buffer pool pages），使用两个 page 作为读入 run（单个 run 中的数据已经排好序），然后将这两个 page 合并的结果写入第三个 page，用作保存 Merge 的临时结果，当这块 page 满了以后，其内容被写入磁盘，然后这块 page 被清空。
+迭代这一过程，直到全部数据都被排好序。
 
-假设待排序的文件一共 N pages，那么第一趟（pass）merge 之后我们将会剩下 N / 2 个 pages，因此merge阶段一共需要 <a href="https://www.codecogs.com/eqnedit.php?latex=\dpi{100}&space;\lceil&space;Log_{2}{N}&space;\rceil" target="_blank"><img src="https://latex.codecogs.com/png.latex?\dpi{100}&space;\lceil&space;Log_{2}{N}&space;\rceil" title="\lceil Log_{2}{N} \rceil" /></a>趟。sorting阶段读入N个pages然后写回N个pages，因此是单独的一趟，同时每趟都需要 2N 次IO，因此两路归并排序一共需要
-<a href="https://www.codecogs.com/eqnedit.php?latex=\dpi{100}&space;2*(1&plus;\lceil&space;Log_{2}{N}&space;\rceil)" target="_blank"><img src="https://latex.codecogs.com/png.latex?\dpi{100}&space;2*(1&plus;\lceil&space;Log_{2}{N}&space;\rceil)" title="2*(1+\lceil Log_{2}{N} \rceil)" /></a>次 IO。
+假设待 Merge 的文件一共 N pages，那么第一趟（pass）merge 之后我们将会剩下 N / 2 个 pages，因此 Merge 阶段一共需要 <a href="https://www.codecogs.com/eqnedit.php?latex=\dpi{100}&space;\lceil&space;Log_{2}{N}&space;\rceil" target="_blank"><img src="https://latex.codecogs.com/png.latex?\dpi{100}&space;\lceil&space;Log_{2}{N}&space;\rceil" title="\lceil Log_{2}{N} \rceil" /></a>趟。Sorting 阶段累计读入 N 个 pages 然后写回 N 个pages，可以算是单独的一趟。每趟都需要 2N 次IO，因此两路归并排序一共需要<a href="https://www.codecogs.com/eqnedit.php?latex=\dpi{100}&space;2*(1&plus;\lceil&space;Log_{2}{N}&space;\rceil)" target="_blank"><img src="https://latex.codecogs.com/png.latex?\dpi{100}&space;2*(1&plus;\lceil&space;Log_{2}{N}&space;\rceil)" title="2*(1+\lceil Log_{2}{N} \rceil)" /></a>次 IO。
 
 ### General K-way Merge Sort
 假设我们有更多的buffer pool pages，总数为 B。那么在sorting阶段，我们可以一次读取 B 个 pages，假设带排序文件依然是 N 个 pages，那么在 sorting 阶段结束后，可以得到 <a href="https://www.codecogs.com/eqnedit.php?latex=\dpi{100}&space;2N*(1&plus;Log_{2}{\lceil&space;N&space;\rceil})" target="_blank"><img src="https://latex.codecogs.com/png.latex?\dpi{100}&space;2N*(1&plus;Log_{2}{\lceil&space;N&space;\rceil})" title="2N*(1+Log_{2}{\lceil N \rceil})" /></a> 个 runs。
@@ -39,7 +39,7 @@ SELECT DISTINCT cid
     ORDER BY cid
 ```
 DBMS通常会采用如下pipeline来完成查询：
-首先使用filter遍历所有tuple，遍历结束后只剩下grade满足B和C的tuple，然后remove除了cid之外的其他列值(假设底层是行存)，这这时得到的结果是无无序的，那么再用之前说的外部排序对cid列进行排序，最后顺序遍历陪排序过的所有tuple，消除重复。
+首先使用filter遍历所有tuple，遍历结束后只剩下grade等于B和C的tuple，然后remove除了cid之外的其他列值(假设底层是行存)，这时得到的结果是无序的，那么再用之前说的外部排序对cid列进行排序，最后顺序遍历陪排序过的所有tuple，消除重复。
 
 什么时候应该选择基于sorting的聚合过程：当我们需要结果按照某个属性被排序时。
 
@@ -55,7 +55,7 @@ SELECT DISTINCT cid
 1. 遍历tuples，留下所有满足where条件的tuples
 2. remove columns，只剩下 cid 列
 3. apply hash function on every cid value，得到一个hash table
-4. 返回 hash table中的所有元素
+4. 返回 hash table 中的所有元素
 
 以上过程都是在内存中执行的。
 
