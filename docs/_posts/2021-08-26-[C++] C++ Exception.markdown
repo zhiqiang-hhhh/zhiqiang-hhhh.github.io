@@ -1,3 +1,10 @@
+---
+layout: post
+title:  "[C++] C++ Exception 性能测试与实现浅探"
+date:   2021-07-03 19:28:11 +0800
+categories: jekyll update
+---
+
 # C++ Exception 性能测试与实现浅探
 [TOC]
 很多编程语言中都有 Exception 机制。利用 Exception 机制，一段代码可以绕过正常的代码执行路径去通知另一段代码，有一些意外事件或者错误情况发生。另一种常见的异常/错误处理机制是ErrorCode，熟悉 C 语言的同学应该体会很深，比如操作系统提供的接口很多都是以 ErrorCode 的形式判断是否发生异常。

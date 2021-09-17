@@ -134,7 +134,7 @@ public:
 - 编译器实施 bitwise constness，但是编写程序时应当使用“概念上的常量性”
 - 当 const 和 non-const 成员函数有着实质等价的实现时，另 non-const 版本调用 const 版本可避免代码重复。
 
-## 确保对象在使用前已经被初始化
+## Item4 确保对象在使用前已经被初始化
 
 确保每一个构造函数都将对象的每一个成员初始化。这里有两个点：
 1. 使用成员初始化列表减少不必要的构造过程；
@@ -171,10 +171,55 @@ ABEntry(const std::string& name, const std::string& address, const std::list<Pho
     {}
 ```
 
-前一个过程：首先执行 ABEntry 的 default 构造函数，然后对于每一个数据成员类，调用其 default 构造函数为成员变量设置初值，然后再对他们进行赋值（assignment operator）。
-后一个过程：首先根据实参对各个成员变量进行copy construct，然后再执行 ABEntry 的 default 构造函数
+前一个过程：对于每一个数据成员类，调用其 default 构造函数进行初始化，然后再对他们进行赋值（assignment operator）。
+后一个过程：对于每一个数据成员类，**调用一次**其 copy constructor，进行一次初始化。
 
-假设 copy constructor 与 assignment operator 代价差不多，那么**使用成员初始化列表就可以省掉 n 次 default constructor**。
+假设 copy constructor 与 assignment operator 代价差不多，且一共 n 个成员变量，那么**使用成员初始化列表就可以省掉 n 次 default constructor**。
+
+```c++
+#include <iostream>
+
+using namespace std;
+
+class Foo {
+    public:
+        Foo() { std::cout << "Foo::Foo()\n"; }
+        Foo(const Foo& foo1_) { std::cout << "Foo::Foo(const Foo&)\n"; }
+        const Foo& operator=(const Foo&) {
+            std::cout << "Foo::operator=(const Foo&)\n"; 
+            return *this;
+        }
+
+};
+
+class Bar {
+    private:
+        Foo foo;
+    public:
+        Bar() { std::cout << "Bar::Bar()\n"; }
+        Bar(const Foo& foo_) : foo(foo_) {}
+        // Bar(const Foo& foo_) {
+        //    foo(foo_);
+        // }
+};
+
+int main(){
+    Foo foo;
+    Bar bar(foo);
+    return 0;
+}
+```
+```bash
+// initialization list
+Foo::Foo()
+Foo::Foo(const Foo&)
+
+// non-initialization list
+Foo::Foo()
+Foo::Foo()
+Foo::operator=(const Foo&)
+```
+
 
 另外，使用成员初始化列表可以保证对变量进行初始化，而不是在构造函数内对其进行赋值。当成员为const或者reference时这一点很重要：他们不能被赋值，只能被初始化。
 
@@ -183,11 +228,15 @@ C++有固定的类内成员初始化顺序：base classes总是早于其derived 
 ### 变量初始化顺序带来的影响
 另一个需要关注的点是初始化顺序对于程序稳定性的影响。
 
+static 对象：生命期从被构造出来到程序结束为止。包括global对象，定义于namespaces作用域内的对象、被static修饰的对象。
+函数内的 static 对象：local-static 对象；非函数内的 static 对象：non local-static 对象
+
+
 不同编译单元（.cpp文件）之间的 non-local static 对象的初始化次序并没有明确规定。因此，如果某个编译单元内的 non-local static 对象的初始化动作使用了另一个编译单元内的某个 non-local static 对象，它所用到的这个对象可能尚未被初始化。
 
 C++保证，函数内的 local static 对象会在该函数被调用期间，首次遇到该对象的定义式之时，被初始化。
 
-结合这两条，得出一条规则：将每个 non-local static 对象搬到自己的专属函数内（该对象在此函数内被声明为 static），这些专属函数返回一个reference指向它所包含的对象，然后用户通过调用这些专属函数来使用这些对象，而不是直接使用对象。实际上就是一个Singleton模式。
+结合这两条，得出一条规则：将每个 non-local static 对象搬到自己的专属函数内（该对象在此函数内被声明为 static），这些专属函数返回一个reference指向它所包含的对象，然后用户通过调用这些专属函数来使用这些对象，而不是直接使用对象。实际上就是一个Singleton模式。这样保证调用者使用到这些对象时，对象已经被初始化。
 
 ### 总结
 - 为内置类型对象进行手工初始化，因为C++不保证初始化它们

@@ -38,7 +38,8 @@ static std::tuple<ASTPtr, BlockIO> executeQueryImpl(
     ReadBuffer * istr)
 {
     ...
-    /// 对于CreateTableDDL，这里返回的是一个InterpreterCreateQuery对象
+    /// [HZQ] 通过 ast 获取对应的 interpreter
+    /// 比如 create table 就会 返回 InterpreterCreateQuery
     auto interpreter = InterpreterFactory::get(ast, context, SelectQueryOptions(stage).setInternal(internal));
     ...
     OpenTelemetrySpanHolder span("IInterpreter::execute()");
@@ -48,6 +49,9 @@ static std::tuple<ASTPtr, BlockIO> executeQueryImpl(
     return std::make_tuple(ast, std::move(res));
 }
 ```
+InterpreterFactory::get() 函数根据 ast 创建对应的 interpreter 对象
+
+
 对于形如`Create table xxx on cluster yyy ...`的语句，`res = interpreter->execute()`会执行到`executeDDLQueryOnCluster`。
 ### executeDDLQueryOnCluster
 精简代码：
