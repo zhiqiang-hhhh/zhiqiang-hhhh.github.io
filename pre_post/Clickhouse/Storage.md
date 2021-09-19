@@ -156,6 +156,8 @@ INSERT INTO TABLE test_table VALUES(3,3,1), (4,4,2)
 
 所以合并得到新 part 的 MinBlock 与 MaxBlock 并不表示该 part 由 MinBlock 到 MaxBlock 之间的所有 part 合并得到！而是表示一个稀疏范围！这一点在不涉及到 ReplicatedMergeTree 时，不会有什么大的影响，因为不会影响到合并：`1_1_1_0`照样可以与`1_3_3_0`合并，但是在 ReplicatedMergeTree 下，缺少的 `1_2_2_0` 就很麻烦了，因为你不知道缺少的 part 是真的没有还是被写到了另一个 replicate 上，具体处理逻辑我们在介绍到 ReplicatedMergeTree 时做分析。
 
+### Mutation
+
 
 ## ReplicatedMergeTree
 ### ReplicatedMergeTreeBlockOutputStream::write
