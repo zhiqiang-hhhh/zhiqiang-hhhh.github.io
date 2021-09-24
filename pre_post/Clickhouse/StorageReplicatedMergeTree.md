@@ -50,7 +50,7 @@ ReplicatedMergeTreeQueue::SelectedEntryPtr StorageReplicatedMergeTree::selectQue
     return selected;
 }
 ```
-处理log entry的真正函数：processQueueEntry，最终执行到 executeLogEntry(LogEntry & entry)
+处理log entry的真正函数：processQueueEntry，最终执行到 executeLogEntry(LogEntry & entry)，该函数的完成代码如下，后面分析各种具体任务时会逐段分析。
 ```c++
 /// StorageReplicatedMergeTree.cpp
 bool StorageReplicatedMergeTree::executeLogEntry(LogEntry & entry)
@@ -280,3 +280,5 @@ void StorageReplicatedMergeTree::clearOldPartsAndRemoveFromZK() {
     removePartsFromZooKeeper(zookeeper, part_names_to_delete_completely, &part_names_to_retry_deletion);
 }
 ```
+### DELETE WHERE
+`ALTER TABLE ... DELETE WEHER ...`

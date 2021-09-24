@@ -165,3 +165,76 @@ INSERT INTO TABLE test_table VALUES(3,3,1), (4,4,2)
 writeTempPart -> commitPart，没有执行 renameAndReplace
 
 
+## Lock
+### Lock Management
+基类 IStorage 包含两个读写锁
+```c++
+IStorage {
+    ...
+private:
+    /// Lock required for alter queries (lockForAlter). Always taken for write
+    /// (actually can be replaced with std::mutex, but for consistency we use
+    /// RWLock). Allows to execute only one simultaneous alter query. Also it
+    /// should be taken by DROP-like queries, to be sure, that all alters are
+    /// finished.
+    mutable RWLock alter_lock = RWLockImpl::create();
+
+    /// Lock required for drop queries. Every thread that want to ensure, that
+    /// table is not dropped have to table this lock for read (lockForShare).
+    /// DROP-like queries take this lock for write (lockExclusively), to be sure
+    /// that all table threads finished.
+    mutable RWLock drop_lock = RWLockImpl::create();
+}
+```
+同时提供了几个对外接口：
+```c++
+/// Lock table for share. This lock must be acuqired if you want to be sure,
+/// that table will be not dropped while you holding this lock. It's used in
+/// variety of cases starting from SELECT queries to background merges in
+/// MergeTree.
+TableLockHolder lockForShare(const String & query_id, const std::chrono::milliseconds & acquire_timeout);
+
+/// Lock table for alter. This lock must be acuqired in ALTER queries to be
+/// sure, that we execute only one simultaneous alter. Doesn't affect share lock.
+TableLockHolder lockForAlter(const String & query_id, const std::chrono::milliseconds & acquire_timeout);
+
+/// Lock table exclusively. This lock must be acquired if you want to be
+/// sure, that no other thread (SELECT, merge, ALTER, etc.) doing something
+/// with table. For example it allows to wait all threads before DROP or
+/// truncate query.
+///
+/// NOTE: You have to be 100% sure that you need this lock. It's extremely
+/// heavyweight and makes table irresponsive.
+TableExclusiveLockHolder lockExclusively(const String & query_id, const std::chrono::milliseconds & acquire_timeout);
+```
+INSERT：在创建 BlockIO 之前对目标 table 加 share 锁，防止写入期间 table 被 drop
+
+```c++
+BlockIO InterpreterInsertQuery::execute() {
+    ...
+    StoragePtr table = getTable(query);
+    auto table_lock = table->lockForShare(getContext()->getInitialQueryId(), settings.lock_acquire_timeout);
+    auto metadata_snapshot = table->getInMemoryMetadataPtr();
+    ...
+}
+```
+ALTER：所有的 ALTER 操作在获取 metadata 之前都加了 alter 锁，保证任意时刻只有一个 ALTER 操作在执行。
+```c++
+BlockIO InterpreterAlterQuery::execute() {
+    ...
+    StoragePtr table = DatabaseCatalog::instance().getTable(table_id, getContext());
+    auto alter_lock = table->lockForAlter(getContext()->getCurrentQueryId(), getContext()->getSettingsRef().lock_acquire_timeout);
+    auto metadata_snapshot = table->getInMemoryMetadataPtr();
+    ...
+}
+```
+
+## Metadata
+Metadata 采用多版本控制，前面 INSERT 期间我们只对 table 获取了 drop 锁，那期间如果有 alter 操作修改元数据怎么办？答案是 ALTER 不会修改 INSERT 获得的 metadata，而是生成新版本的 metadata。
+```c++
+class IStorage {
+    ...
+private:
+    MultiVersionStorageMetadataPtr metadata;
+}
+```
