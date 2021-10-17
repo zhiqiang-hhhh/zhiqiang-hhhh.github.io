@@ -22,7 +22,10 @@ void f(std::vector<T>&& param); // 右值引用
 template<typename T>
 void f(const T&& param);    // 右值引用
 ```
-当 T&& 出现在模板类的模板函数形参时，T&& 往往是一个右值引用**而不是万能引用**。因为模板类被实例化之后，T&& 便不再涉及到类型推导。我们说往往，意味着也有例外：
+当 T&& 出现在模板类的模板函数形参时，T&& 往往是一个右值引用**而不是万能引用**。因为模板类被实例化之后，T&& 便不再涉及到类型推导。
+
+
+但是也有例外，当模板类具有一个模板函数，而该模板函数的模板参数并不来自于模板类的模板参数时，T&& 又回变为万能引用，比如：
 ```c++
 template<typename T, typename Allocator = allocator<T>>
 class vector {
@@ -31,7 +34,7 @@ public:
     void emplace_back(Args&&... args);
 }
 ```
-这里的 emplate_back 的形参是真真切切的万能引用，因为类型参数 Args 只有在 emplace_back 被真正调用时才会被推导，与类型参数 T 无关。
+这里的 emplate_back 的形参是万能引用，因为类型参数 Args 只有在 emplace_back 被真正调用时才会被推导，与模板类的类型参数 T 无关。
 
 ## Item25
 我们知道 std::move 的使用动机是将一个已知的可移动对象传递给某个函数，使得其能够利用到该对象的可移动特性。而universal reference 既可能绑定的一个 lvalue reference 也可能绑定 rvalue reference，那么当我们想要利用来自 universal reference 的 rvalue reference 时，该怎么保持该实参的特性呢？答案是 std::forward
