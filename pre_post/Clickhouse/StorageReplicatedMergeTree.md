@@ -1,13 +1,10 @@
 [TOC]
 
+基于 21.3 版本的代码进行介绍。
 
-    适用读者：有 Clickhouse 的基本使用经历，了解 ReplicatedMergeTree 的使用方式。
+## INSERT INTO TABLE
 
-
-
-## 写入
-
-### initial 节点
+### Initial 节点
 initial 节点的写入过程总体来看需要完成两个任务，首先是 part 在本地的写入，其次是在 zk 中创建一条 log 告诉其他 replica 需要进行 fetch。
 ```c++
 void ReplicatedMergeTreeBlockOutputStream::write(const Block & block)
@@ -156,8 +153,8 @@ part->info.max_block = block_number;
 
 
 
-### follower 节点
-目前我们完成了在 initail 节点的 part 写入，现在我们需要完成将 initial 节点写入的 part 同步到 follower 节点的工作。
+### Follower 节点
+目前我们完成了在 initail 节点的 part 写入，现在需要完成将 initial 节点写入的 part 同步到 follower 节点的工作。
 
 #### 线程模型
 
@@ -204,9 +201,9 @@ StorageReplicatedMergeTree::StorageReplicatedMergeTree(ContextPtr context_, ...)
 
 #### part 同步
 
-前面我们提到，initial 节点会在 zk 中创建 log，告诉 follower 节点需要进行 part fetch。follower 节点的 queue_updating_task 的任务是从 zk 拉取一个批次的 log 到本地，并且在 replica/queue 中添加一条 queue-xxxx ，表示当前 log 正在/已经被执行，最后触发 background_executor。
+前面我们提到，initial 节点会在 zk 中创建 log，告诉 follower 节点需要进行 part fetch。follower 节点的 queue_updating_task 的任务是从 zk 拉取一个批次的 log 到本地，并且在zk的 table/replica/{replica}/queue 中添加一条 queue-xxxx ，表示当前 log 正在/已经被执行，最后触发 background_executor。
 
-**queue_updating**
+**pullLogsToQueue**
 ```c++
 int32_t ReplicatedMergeTreeQueue::pullLogsToQueue(zkutil::ZooKeeperPtr zookeeper, Coordination::WatchCallback watch_callback)
 {
@@ -216,11 +213,6 @@ int32_t ReplicatedMergeTreeQueue::pullLogsToQueue(zkutil::ZooKeeperPtr zookeeper
     ...
     log_entries.erase(所有小于index的log);
     ...
-    /// We update mutations after we have loaded the list of log entries, but before we insert them
-    /// in the queue.
-    /// With this we ensure that if you read the log state L1 and then the state of mutations M1,
-    /// then L1 "happened-before" M1.
-    updateMutations(zookeeper);
     
     std::sort(log_entries.begin(), log_entries.end());
     for (size_t entry_idx = 0, num_entries = log_entries.size(); entry_idx < num_entries;) {
@@ -254,17 +246,16 @@ int32_t ReplicatedMergeTreeQueue::pullLogsToQueue(zkutil::ZooKeeperPtr zookeeper
         try
         {
             ...
-            insertUnlocked(...);
         }
 
-    storage.background_executor.triggerTask();
+        storage.background_executor.triggerTask();
     }
     return stat.version;
 }
 ```
 
 **DataProcessing**
-一切顺利的话，前面一步 queue 中添加的 log entry 就该被 getDataProcessingJob 消费掉。
+一切顺利的话，前面一步 queue 中添加的 log entry 就该被 getDataProcessingJob 消费掉，该函数由 
 ```c++
 std::optional<JobAndPool> StorageReplicatedMergeTree::getDataProcessingJob()
 {
@@ -279,7 +270,7 @@ selectQueueEntry 函数决定了某个 log 是否应该被执行，其详细逻�
 
 **executeLogEntry**
 
-对于写入过程产生的 GET_PART log，如果 part_name 在当前 replica 存在（包括 Committed/PreCommitted 状态）且在 zk 的 replica_path/parts/part_name 下存在，则不会进行 fetch。否则我们将会执行 fetch
+对于写入过程产生的 GET_PART log，如果 part_name 在当前 replica 存在（包括 Committed/PreCommitted 状态）且在 zk 的 replica_path/parts/part_name 下存在，则不会进行 fetch。否则我们将会执行 fetch，这里还有其他的一些判断，留在后面和MERGE_PART一起介绍。
 
 **executeFetch**
 ```c++
@@ -293,10 +284,212 @@ bool StorageReplicatedMergeTree::executeFetch(LogEntry & entry)
     return true;
 }
 ```
-fetchPart 的具体执行过程就不写了。当该函数返回 true 时，ReplicatedMergeTreeQueue 会将本次 log 从 replica/queue 下删除
+fetchPart 的具体执行过程就不写了。当该函数返回 true 时，ReplicatedMergeTreeQueue 会将本次 log 从 replica/{replica}/queue 下删除
+
+## ReplicatedMergeTreeQueue
+
+通过前面几个典型任务的流程分析，我们对 ReplicationMergeTree 的任务处理有了整体印象，大致分为三个阶段：
+1. log 创建：由 initial 节点在 zk 的 log 下创建一条 log-xxxxx 
+2. 任务队列更新：folower 节点监听 log，将新的 log 拉取到本地，更新 zk 中 replica/{replica}/queue 的状态，触发 background_executor
+3. background_executor 消费 queue
+
+ReplicatedMergeTreeQueue 在整个过程中充当最关键的角色，该类的实现决定了如何拉取 log，当前 log 是否应该被执行，以及 replica/{replica}/queue 下节点如何更新。
+
+其关键的数据成员如下：
+```plantuml
+class ReplicatedMergeTreeQueue {
+    - zookeeper_path : String
+    - replica_path : String
+    - state_mutex : mutex
+    - current_parts : ActiveDataPartSet
+    - queue : Queue
+    - future_parts : std::map<String, LogEntryPtr>
+    - virtual_parts : ActiveDataPartSet
+    - pull_logs_to_queue_mutex : mutex
+    - alter_sequence : ReplicatedMergeTreeAltersSequence
+    + selectEntryToProcess(merger_mutator, MergeTreeData) : SelectedEntryPtr
+    + processEntry(zookeeper, LogEntryPtr, func) : bool
+}
+```
+
+
+### pullLogsToQueue
+
+pullLogsToQueue 函数主要由 background_schedule_pool 中的线程执行，其执行的次数反应在监控指标里对应 ClickHouseMetrics_BackgroundSchedulePoolTask
+
+任何时刻只有一个线程能够执行 ReplicatedMergeTreeQueue::pullLogsToQueue
+```c++
+std::lock_guard lock(pull_logs_to_queue_mutex);
+```
+获取 `replica/{replica}/log_pointer`保存的值，并且通过 zookeeper list 请求，获取 `log` 下的所有节点名称，名称格式为`log-xxxxxxxx`，updateMutations 函数用于控制 mutation 操作顺序，到涉及到 mutation 操作时再介绍。
+```c++
+String index_str = zookeeper->get(replica_path + "/log_pointer");
+UInt64 index;
+
+/// The version of "/log" is modified when new entries to merge/mutate/drop appear.
+Coordination::Stat stat;
+zookeeper->get(zookeeper_path + "/log", &stat);
+
+Strings log_entries = zookeeper->getChildrenWatch(zookeeper_path + "/log", nullptr, watch_callback);
+
+updateMutations(zookeeper);
+```
+下一步在内存中删除所有index小于当前replica的log pointer的所有log，之前的log_entries包含log下所有的节点名称，getChildren 最终调用的是 zk 的 list 方法，当 log 下的子节点数量非常多的时候，list一次可能会花费相当多的时间（待测）：
+```c++
+log_entries.erase(所有小于index的log);
+```
+下一步，将 current_multi_batch_size 条 log 加进内存中的 queue 对象，下次循环将会拉 current_multi_batch_size * 2 条 log，直到 current_multi_batch_size 达到 100
+```c++
+for (size_t entry_idx = 0, num_entries = log_entries.size(); entry_idx < num_entries;)
+{
+    auto begin = log_entries.begin() + entry_idx;
+    auto end = entry_idx + current_multi_batch_size >= log_entries.size()
+        ? log_entries.end()
+        : (begin + current_multi_batch_size);
+    auto last = end - 1;
+    /// Increment entry_idx before batch size increase (we copied at most current_multi_batch_size entries)
+    entry_idx += current_multi_batch_size;
+
+    if (current_multi_batch_size < MAX_MULTI_OPS)
+                current_multi_batch_size = std::min<size_t>(MAX_MULTI_OPS, current_multi_batch_size * 2);
+    ...
+}
+```
+前一步 getChildrenWatch 获取的 log_entries 里保存的只是 node 的名字，没有获取 node 中的内容，在循环内，下一步就是通过 asyncGet 方法获取 node 的内容
+```c++
+LOG_DEBUG(log, "Pulling {} entries to queue: {} - {}", (end - begin), *begin, *last);
+
+zkutil::AsyncResponses<Coordination::GetResponse> futures;
+```
+`zkutil::AsyncResponses<Coordination::GetResponse> futures`是一个vector，保存的每个元素为 string 类型的 log-xxxxx，和一个 Zookeeper::futureGet 对象，
+```c++
+Coordination::Requests ops;
+std::vector<LogEntryPtr> copied_entries;
+copied_entries.reserve(end - begin);
+
+for (auto & future : futures)
+{
+    Coordination::GetResponse res = future.second.get();
+
+    copied_entries.emplace_back(LogEntry::parse(res.data, res.stat));
+
+    ops.emplace_back(zkutil::makeCreateRequest(
+        replica_path + "/queue/queue-", res.data, zkutil::CreateMode::PersistentSequential));
+
+    const auto & entry = *copied_entries.back();
+    if (entry.type == LogEntry::GET_PART)
+    {
+        std::lock_guard state_lock(state_mutex);
+        if (entry.create_time && (!min_unprocessed_insert_time || entry.create_time < min_unprocessed_insert_time))
+        {
+            min_unprocessed_insert_time = entry.create_time;
+            min_unprocessed_insert_time_changed = min_unprocessed_insert_time;
+        }
+    }
+}
+```
+上述这段循环结束后，`copied_entries`就会包含 log 节点的名称及其内容，同时在 replica/{replica}/queue 下创建 queue-xxxxx，表示本 replica 正在执行该 log
+```c++
+ops.emplace_back(zkutil::makeSetRequest(
+    replica_path + "/log_pointer", toString(last_entry_index + 1), -1));
+
+if (min_unprocessed_insert_time_changed)
+    ops.emplace_back(zkutil::makeSetRequest(
+        replica_path + "/min_unprocessed_insert_time", toString(*min_unprocessed_insert_time_changed), -1));
+
+auto responses = zookeeper->multi(ops);
+```
+到这里，zookeeper 中的状态我们已经更新完成。后续是更新内存状态
+```c++
+try
+{
+    std::lock_guard state_lock(state_mutex);
+
+    for (size_t copied_entry_idx = 0, num_copied_entries = copied_entries.size(); copied_entry_idx < num_copied_entries; ++copied_entry_idx)
+    {
+        String path_created = dynamic_cast<const Coordination::CreateResponse &>(*responses[copied_entry_idx]).path_created;
+        copied_entries[copied_entry_idx]->znode_name = path_created.substr(path_created.find_last_of('/') + 1);
+
+        std::optional<time_t> unused = false;
+        insertUnlocked(copied_entries[copied_entry_idx], unused, state_lock);
+    }
+
+    last_queue_update = time(nullptr);
+}
+```
+更新内存状态的核心目标就是将 copied_entries 中的元素添加到类型为`std::list<LogEntryPtr>`的 queue 对象中，由函数 insertInlocked 完成。
+
+内存状态更新完成后，尝试让后台执行线程池消费log
+```c++
+storage.background_executor.triggerTask();
+```
+
+该函数在执行过程中会打印两条重要日志，第一条
+```c++
+LOG_DEBUG(log, "Pulling {} entries to queue: {} - {}", (end - begin), *begin, *last);
+```
+是在**每次**循环开始，更新 zk 中的 queue 以及 log pointer 之前打印的，，第二条
+```c++
+LOG_DEBUG(log, "Pulled {} entries to queue.", copied_entries.size());
+```
+是在**每次循环结束**，更新完内存中的 queue 的状态后打印的。通过计算这两条日志的时间间隔，可以评估存量 log 的消费速度。
+
+线上真实的日志记录：
+```txt
+2021.10.28 15:29:59.682800 [ 14506 ] {} <Debug> xxx (ReplicatedMergeTreeQueue): Pulling 6 entries to queue: log-0000989928 - log-0000989933
+
+2021.10.28 15:29:59.873588 [ 14506 ] {} <Debug> xxx (ReplicatedMergeTreeQueue): Pulled 6 entries to queue.
+```
+这里 6 条 log，更新 zk 以及内存需要 200 ms
+
+### selectEntryToProcess
+
+该函数通常在 StorageReplicatedMergeTree::getDataProcessingJob 中执行，与 ReplicatedMergeTreeQueue::processEntry 成对配合完成一条 log 的执行。 getDataProcessingJob 则被 background_executor 中的两个线程池中的
 
 
 
+## 异常处理
+
+
+
+本小节介绍一条 log 何时会被认为不应该执行，以及偏离正常执行路径后会发生什么。
+
+### Log 何时 should not execute
+
+关键函数`ReplicatedMergeTreeQueue::shouldExecuteLogEntry`
+
+**关键路径1**
+
+如果 log.new_part_name 包含在 queue.future_parts 中，则 log 本次不会被执行。
+```c++
+/// If our entry produce part which is already covered by
+/// some other entry which is currently executing, then we can postpone this entry.
+for (const String & new_part_name : entry.getVirtualPartNames(format_version))
+{
+    if (!isNotCoveredByFuturePartsImpl(entry.znode_name, new_part_name, out_postpone_reason, state_lock))
+        return false;
+}
+```
+`isNotCoveredByFuturePartsImpl`函数做如下检查：如果 new_part_name 被包含在另一个正在被执行的 log 的 new_part_name 中，则当前 log 不会被执行。比如：
+```sql
+Not executing log entry queue-0000733298 for part 1635091200_22325_22325_0 because it is covered by part 1635091200_0_22330_3205 that is currently executing.
+```
+这条 GET_PART log 要 fetch 的 part name 是 1635091200_22325_22325_0，被另一条 MERGE_PART 将要生成的 1635091200_0_22330_3205 所包含，所以当前 GET_PART log 不会被执行。
+
+当另一条 log 执行完成后，下次执行 isNotCoveredByFuturePartsImpl 将会成功。
+
+future_parts 
+
+**关键路径2**
+```c++
+/// Check that fetches pool is not overloaded
+if (entry.type == LogEntry::GET_PART && !storage.canExecuteFetch(entry, out_postpone_reason))
+{
+    /// Don't print log message about this, because we can have a lot of fetches,
+    /// for example during replica recovery.
+    return false;
+}
+```
 ## 其他任务
 ### DROP PARTS
 以如下操作为例
@@ -426,15 +619,7 @@ void StorageReplicatedMergeTree::clearOldPartsAndRemoveFromZK() {
 
 
 
-## 任务管控
-
-前面通几个典型任务的流程分析，对 ReplicationMergeTree 的任务处理有了整体印象，大致分为三个阶段：
-1. log 创建：由 initial 节点在 zk 的 log 下创建一条 log-xxxxx 
-2. 任务队列更新：folower 节点监听 log，将新的 log 拉取到本地，更新 zk 中 replica/queue 的状态，触发 background_executor
-3. background_executor 消费 queue
-
-本小节介绍其他 thread/task
-
+## 其他线程
 ### ReplicatedMergeTreeRestartingThread
 该对象构造时，在**全局的SchedulePool**中创建一个新的task。这个 task 有两个主要任务：
 1. 进程启动/表刚创建时，对表进行初始化。包括启动必要线程、进行 leader 选举
