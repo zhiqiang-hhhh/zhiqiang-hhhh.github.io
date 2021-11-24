@@ -1,6 +1,5 @@
 # Doris Heartbeats
-心跳管理是Doris实现集群管理的基础。
-相关的Thrift 定义：
+心跳管理是Doris实现集群管理的基础。相关的 Thrift 定义在 HearbeatService.thrift
 ```thrift
 ...
 struct TMasterInfo {
@@ -34,7 +33,6 @@ service HeartbeatService {
     THeartbeatResult heartbeat(1:TMasterInfo master_info);
 }
 ```
-从HeartbeatService的定义可以看出来，heartbeat服务的调用者是FE，而执行者是BE。
 
 ```thrift
 struct TFrontendPingFrontendResult {
@@ -59,48 +57,76 @@ service FrontendService{
 ```
 同时FE在自己的Service中还提供了ping方法。明显该方法用于FE之间的心跳探测。
 
-## FE
-我们先从FE开始看，需要关注：
-1. FE 何时调用 hearbeat 服务
-2. BE 信息是如何被加入到 FE 元数据中的
-
+## Heartbeat Service
+添加 backend 到某个 cluster：`alter cluster test_cluster add backends 'xxx:ppp' to shard 1;`，最终执行到 TenantMgr.java 的 addBackends 函数
 ```java
-    public void addBackends(String tenantName, String clusterName, List<Pair<String, Integer>> hosts, int shardId) throws UserException {
-    	// add backends to system info service to track heartbeat and report version info
-    	systemInfoService.addBackends(hosts, true, tenantName);
-    	CHTenant chTenant = nameToTenant.get(tenantName);
-    	...
-    	CHCluster chCluster = chTenant.getCluster(clusterName);
-    	...
-    	for (int i = 0; i < hosts.size(); ++i) {
-    	    Backend backend = systemInfoService.getBackendByHostPort(tenantName, hosts.get(i));
-    	    if (backend == null) {
-              throw new UserException("Could not find backend " + hosts.get(i));
-            }
-            chCluster.addBackendToShard(shardId, backend.getId());
-            editLog.logAddCHBackend(new BackendOpLog(tenantName, clusterName, backend.getId(), shardId));
-    	}
+public void addBackends(String tenantName, String clusterName, List<Pair<String, Integer>> hosts, int shardId) throws UserException {
+    // add backends to system info service to track heartbeat and report version info
+    systemInfoService.addBackends(hosts, true, tenantName);
+    CHTenant chTenant = nameToTenant.get(tenantName);
+    ...
+    CHCluster chCluster = chTenant.getCluster(clusterName);
+    ...
+    for (int i = 0; i < hosts.size(); ++i) {
+        Backend backend = systemInfoService.getBackendByHostPort(tenantName, hosts.get(i));
+        if (backend == null) {
+            throw new UserException("Could not find backend " + hosts.get(i));
+        }
+        chCluster.addBackendToShard(shardId, backend.getId());
+        editLog.logAddCHBackend(new BackendOpLog(tenantName, clusterName, backend.getId(), shardId));
     }
+}
+```
+该函数完成两件事：
+1. 在内存中完成 addBackends，修改数据结构
+2. 在 log 中添加 backend，完成 backend 相关信息的持久化
 
-    public void dropBackends(String tenantName, String clusterName, List<Pair<String, Integer>> hosts) throws UserException {
-    	// Not 
-    	CHTenant chTenant = nameToTenant.get(tenantName);
-    	if (chTenant == null) {
-    		throw new UserException("Tenant " + tenantName + " not exist");
-    	}
-    	CHCluster chCluster = chTenant.getCluster(clusterName);
-    	if (chCluster == null) {
-    		throw new UserException("Cluster " + clusterName + " not exist");
-    	}
-
-    	for (int i = 0; i < hosts.size(); ++i) {
-    		Backend backend = systemInfoService.getBackendByHostPort(tenantName, hosts.get(i));
-    		if (backend == null) {
-        		continue;
-    		}
-        	chCluster.dropBackend(backend.getId());
-        	// TODO(ygl) check if other cluster have this backend, if not then remove it from system info service
-        	editLog.logDropCHBackend(new BackendOpLog(tenantName, clusterName, backend.getId(), -1));
+SystemInfoService 
+```java
+public void addBackends(List<Pair<String, Integer>> hostPortPairs,
+                            boolean isFree, String destCluster, Tag tag) throws UserException {
+    for (Pair<String, Integer> pair : hostPortPairs) {
+        if (getBackendWithHeartbeatPort(pair.first, pair.second) != null) {
+            continue;
         }
     }
+
+    for (Pair<String, Integer> pair : hostPortPairs) {
+        addBackend(pair.first, pair.second, isFree, destCluster, tag);
+    }
+}
+```
+FE 中有个定时任务 HeartbeatMgr，该任务定期遍历 SystemInfoService 的字段 idToBackendRef 中记录的所有 backend，然后创建一个调用目标 backend heartbeat 函数的 RPC client，并且调用该 heartbeat
+```java
+// HeartbeatMgr.java
+protected void runAfterCatalogReady() {
+    List<Future<HeartbeatResponse>> hbResponses = Lists.newArrayList();
+    
+    // send backend heartbeat
+    for (Backend backend : nodeMgr.getIdToBackend().values()) {
+        BackendHeartbeatHandler handler = new BackendHeartbeatHandler(backend);
+        hbResponses.add(executor.submit(handler));
+    }
+
+    ...
+}
+
+private class BackendHeartbeatHandler implements Callable<HeartbeatResponse> {   
+    ...
+    @Override
+    public HeartbeatResponse call() {
+        client = ClientPool.backendHeartbeatPool.borrowObject(beAddr);
+        ...
+        TMasterInfo copiedMasterInfo = new TMasterInfo(masterInfo.get());
+        ...
+        heartbeatRequest.setMasterInfo(copiedMasterInfo);
+        THeartbeatResult result = client.heartbeat(heartbeatRequest);
+        ...
+    }
+}
+```
+BE 实现了 HeartbeatServer。
+```cpp
+// heartbeat_server.cpp
+
 ```
