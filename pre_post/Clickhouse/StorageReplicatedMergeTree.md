@@ -1,9 +1,10 @@
 [TOC]
 
-基于 21.3 版本的代码进行介绍。
+ReplicatedMergeTree 相比普通的 MergeTree 最大的区别在于添加了不同 Replica 之间的各种任务同步，所以本章基于 21.3 版本的代码对 ReplicatedMergeTree 的任务管理进行介绍。
+# 任务管理
+## 整体流程
 
-## INSERT INTO TABLE
-
+以 INSERT INTO TABLE 为例先看一下 ReplicatedMergeTree 任务管理的整体流程
 ### Initial 节点
 initial 节点的写入过程总体来看需要完成两个任务，首先是 part 在本地的写入，其次是在 zk 中创建一条 log 告诉其他 replica 需要进行 fetch。
 ```c++
@@ -201,9 +202,71 @@ StorageReplicatedMergeTree::StorageReplicatedMergeTree(ContextPtr context_, ...)
 
 #### part 同步
 
+**ReplicatedMergeTreeQueue::pullLogsToQueue**
+
 前面我们提到，initial 节点会在 zk 中创建 log，告诉 follower 节点需要进行 part fetch。follower 节点的 queue_updating_task 的任务是从 zk 拉取一个批次的 log 到本地，并且在zk的 table/replica/{replica}/queue 中添加一条 queue-xxxx ，表示当前 log 正在/已经被执行，最后触发 background_executor。
 
-**pullLogsToQueue**
+**DataProcessing**
+一切顺利的话，前面一步 queue 中添加的 log entry 就该被 getDataProcessingJob 消费掉，该函数由 
+```c++
+std::optional<JobAndPool> StorageReplicatedMergeTree::getDataProcessingJob()
+{
+    /// This object will mark the element of the queue as running.
+    ReplicatedMergeTreeQueue::SelectedEntryPtr selected_entry = selectQueueEntry();
+    ...
+    processQueueEntry(selected_entry);
+    ...
+}
+```
+selectQueueEntry 函数决定了某个 log 是否应该被执行，其详细逻辑在后面单独介绍。**一旦某个 log 被选中可以执行，则其在 system.replication_queue 中对应项的 num_tries 会加一**
+
+**executeLogEntry**
+
+对于写入过程产生的 GET_PART log，如果 part_name 在当前 replica 存在（包括 Committed/PreCommitted 状态）且在 zk 的 replica_path/parts/part_name 下存在，则不会进行 fetch。否则我们将会执行 fetch，这里还有其他的一些判断，留在后面和MERGE_PART一起介绍。
+
+**executeFetch**
+```c++
+bool StorageReplicatedMergeTree::executeFetch(LogEntry & entry)
+{
+    String replica = findReplicaHavingCoveringPart(entry, true);
+    ...
+    String part_name = entry.actual_new_part_name.empty() ? entry.new_part_name : entry.actual_new_part_name;
+    fetchPart(part_name, metadata_snapshot, zookeeper_path + "/replicas/" + replica, false, entry.quorum));
+    ...
+    return true;
+}
+```
+fetchPart 的具体执行过程就不写了。当该函数返回 true 时，ReplicatedMergeTreeQueue 会将本次 log 从 replica/{replica}/queue 下删除
+
+
+## 关键步骤 
+### ReplicatedMergeTreeQueue::pullLogsToQueue
+
+通过前面几个典型任务的流程分析，我们对 ReplicationMergeTree 的任务处理有了整体印象，大致分为三个阶段：
+1. log 创建：由 initial 节点在 zk 的 log 下创建一条 log-xxxxx 
+2. 任务队列更新：folower 节点监听 log，将新的 log 拉取到本地，更新 zk 中 replica/{replica}/queue 的状态，触发 background_executor
+3. background_executor 消费 queue
+
+ReplicatedMergeTreeQueue 在整个过程中充当关键的角色，该类的实现决定了如何拉取 log，当前 log 是否应该被执行，以及 replica/{replica}/queue 下节点如何更新。
+
+其关键的数据成员如下：
+```plantuml
+class ReplicatedMergeTreeQueue {
+    - zookeeper_path : String
+    - replica_path : String
+    - state_mutex : mutex
+    - current_parts : ActiveDataPartSet
+    - queue : Queue
+    - future_parts : std::map<String, LogEntryPtr>
+    - virtual_parts : ActiveDataPartSet
+    - pull_logs_to_queue_mutex : mutex
+    - alter_sequence : ReplicatedMergeTreeAltersSequence
+    + selectEntryToProcess(merger_mutator, MergeTreeData) : SelectedEntryPtr
+    + processEntry(zookeeper, LogEntryPtr, func) : bool
+}
+```
+**pullLogsToQueue** 
+
 ```c++
 int32_t ReplicatedMergeTreeQueue::pullLogsToQueue(zkutil::ZooKeeperPtr zookeeper, Coordination::WatchCallback watch_callback)
 {
@@ -253,67 +316,6 @@ int32_t ReplicatedMergeTreeQueue::pullLogsToQueue(zkutil::ZooKeeperPtr zookeeper
     return stat.version;
 }
 ```
-
-**DataProcessing**
-一切顺利的话，前面一步 queue 中添加的 log entry 就该被 getDataProcessingJob 消费掉，该函数由 
-```c++
-std::optional<JobAndPool> StorageReplicatedMergeTree::getDataProcessingJob()
-{
-    /// This object will mark the element of the queue as running.
-    ReplicatedMergeTreeQueue::SelectedEntryPtr selected_entry = selectQueueEntry();
-    ...
-    processQueueEntry(selected_entry);
-    ...
-}
-```
-selectQueueEntry 函数决定了某个 log 是否应该被执行，其详细逻辑在后面单独介绍。**一旦某个 log 被选中可以执行，则其在 system.replication_queue 中对应项的 num_tries 会加一**
-
-**executeLogEntry**
-
-对于写入过程产生的 GET_PART log，如果 part_name 在当前 replica 存在（包括 Committed/PreCommitted 状态）且在 zk 的 replica_path/parts/part_name 下存在，则不会进行 fetch。否则我们将会执行 fetch，这里还有其他的一些判断，留在后面和MERGE_PART一起介绍。
-
-**executeFetch**
-```c++
-bool StorageReplicatedMergeTree::executeFetch(LogEntry & entry)
-{
-    String replica = findReplicaHavingCoveringPart(entry, true);
-    ...
-    String part_name = entry.actual_new_part_name.empty() ? entry.new_part_name : entry.actual_new_part_name;
-    fetchPart(part_name, metadata_snapshot, zookeeper_path + "/replicas/" + replica, false, entry.quorum));
-    ...
-    return true;
-}
-```
-fetchPart 的具体执行过程就不写了。当该函数返回 true 时，ReplicatedMergeTreeQueue 会将本次 log 从 replica/{replica}/queue 下删除
-
-## ReplicatedMergeTreeQueue
-
-通过前面几个典型任务的流程分析，我们对 ReplicationMergeTree 的任务处理有了整体印象，大致分为三个阶段：
-1. log 创建：由 initial 节点在 zk 的 log 下创建一条 log-xxxxx 
-2. 任务队列更新：folower 节点监听 log，将新的 log 拉取到本地，更新 zk 中 replica/{replica}/queue 的状态，触发 background_executor
-3. background_executor 消费 queue
-
-ReplicatedMergeTreeQueue 在整个过程中充当最关键的角色，该类的实现决定了如何拉取 log，当前 log 是否应该被执行，以及 replica/{replica}/queue 下节点如何更新。
-
-其关键的数据成员如下：
-```plantuml
-class ReplicatedMergeTreeQueue {
-    - zookeeper_path : String
-    - replica_path : String
-    - state_mutex : mutex
-    - current_parts : ActiveDataPartSet
-    - queue : Queue
-    - future_parts : std::map<String, LogEntryPtr>
-    - virtual_parts : ActiveDataPartSet
-    - pull_logs_to_queue_mutex : mutex
-    - alter_sequence : ReplicatedMergeTreeAltersSequence
-    + selectEntryToProcess(merger_mutator, MergeTreeData) : SelectedEntryPtr
-    + processEntry(zookeeper, LogEntryPtr, func) : bool
-}
-```
-
-
-### pullLogsToQueue
 
 pullLogsToQueue 函数主要由 background_schedule_pool 中的线程执行，其执行的次数反应在监控指标里对应 ClickHouseMetrics_BackgroundSchedulePoolTask
 
@@ -424,15 +426,15 @@ try
 storage.background_executor.triggerTask();
 ```
 
-该函数在执行过程中会打印两条重要日志，第一条
+pullLogsToQueue 函数在执行过程中会打印两条重要日志，第一条是在**每次**循环开始，更新 zk 中的 queue 以及 log pointer 之前打印的：
 ```c++
 LOG_DEBUG(log, "Pulling {} entries to queue: {} - {}", (end - begin), *begin, *last);
 ```
-是在**每次**循环开始，更新 zk 中的 queue 以及 log pointer 之前打印的，，第二条
+第二条是在**每次循环结束**，更新完内存中的 queue 的状态后打印的：
 ```c++
 LOG_DEBUG(log, "Pulled {} entries to queue.", copied_entries.size());
 ```
-是在**每次循环结束**，更新完内存中的 queue 的状态后打印的。通过计算这两条日志的时间间隔，可以评估存量 log 的消费速度。
+这两条日志的时间间隔，表示每次在 zk 的 replica/{replica}/queue 中创建节点并且更新本地内存 queue 所花费的时间。
 
 线上真实的日志记录：
 ```txt
@@ -440,13 +442,203 @@ LOG_DEBUG(log, "Pulled {} entries to queue.", copied_entries.size());
 
 2021.10.28 15:29:59.873588 [ 14506 ] {} <Debug> xxx (ReplicatedMergeTreeQueue): Pulled 6 entries to queue.
 ```
-这里 6 条 log，更新 zk 以及内存需要 200 ms
+这里 6 条 log，更新 zk 以及内存需要 200 ms。
+在另一个一直很健康的集群里，日志如下：
+```txt
+2021.11.19 10:45:27.829720 [ 72036 ] {} <Debug> xxx (ReplicatedMergeTreeQueue): Pulling 1 entries to queue: log-0008538308 - log-0008538308
 
-### selectEntryToProcess
+2021.11.19 10:45:27.833962 [ 72036 ] {} <Debug> xxx (ReplicatedMergeTreeQueue): Pulled 1 entries to queue.
+```
+区别在于正常集群通常一次只会 pull 一条 log，并且更新 zk 速度很快。
 
-该函数通常在 StorageReplicatedMergeTree::getDataProcessingJob 中执行，与 ReplicatedMergeTreeQueue::processEntry 成对配合完成一条 log 的执行。 getDataProcessingJob 则被 background_executor 中的两个线程池中的
 
+### ReplicatedMergeTreeQueue::selectEntryToProcess
 
+该函数通常在 StorageReplicatedMergeTree::getDataProcessingJob 中执行，与 ReplicatedMergeTreeQueue::processEntry 成对配合完成一条 log 的执行。该函数的逻辑很简洁：
+```c++
+ReplicatedMergeTreeQueue::SelectedEntryPtr ReplicatedMergeTreeQueue::selectEntryToProcess(MergeTreeDataMergerMutator & merger_mutator, MergeTreeData & data)
+{
+    LogEntryPtr entry;
+
+    std::lock_guard lock(state_mutex);
+
+    for (auto it = queue.begin(); it != queue.end(); ++it)
+    {
+        if ((*it)->currently_executing)
+            continue;
+
+        if (shouldExecuteLogEntry(**it, (*it)->postpone_reason, merger_mutator, data, lock))
+        {
+            entry = *it;
+            /// We gave a chance for the entry, move it to the tail of the queue, after that
+            /// we move it to the end of the queue.
+            queue.splice(queue.end(), queue, it);
+            break;
+        }
+        else
+        {
+            ++(*it)->num_postponed;
+            (*it)->last_postpone_time = time(nullptr);
+        }
+    }
+
+    if (entry)
+        return std::make_shared<SelectedEntry>(entry, std::unique_ptr<CurrentlyExecuting>{ new CurrentlyExecuting(entry, *this) });
+    else
+        return {};
+}
+```
+总结其中的关键点：
+1. selectEntryToProcess 从 queue 中一次选择一条可执行的 log，一旦某个 log 被选择执行，它就会被 move 到队尾
+2. 若某个 log 被 shouldExecuteLogEntry 判断不能执行，它将被保留在 queue 中原始位置，并且将其 num_postponed 加一，该值可以通过 system.replication_queue 看到。
+3. 对于被选择可以执行的 log，为其创建一个 SelectedEntry 对象，在该对象存在期间，log 会被标记为正在执行，其 num_tries 字段被加一
+
+### ReplicatedMergeTreeQueue::shouldExecuteLogEntry
+该函数决定一条 queue 中的 log，是否应该被交给 executeLogEntry 函数去处理。shouldExecuteLogEntry 会针对不同类型的 log 做相应的判断，我们这里重点关注两类 log，一个是 GET_PART，另一类是 MERGE_PARTS。
+```c++
+bool ReplicatedMergeTreeQueue::shouldExecuteLogEntry(
+    const LogEntry & entry,
+    String & out_postpone_reason,
+    MergeTreeDataMergerMutator & merger_mutator,
+    MergeTreeData & data,
+    std::lock_guard<std::mutex> & state_lock) const
+{
+    ...
+    if ((entry.type == LogEntry::GET_PART || entry.type == LogEntry::ATTACH_PART)
+        && !storage.canExecuteFetch(entry, out_postpone_reason))
+    {
+        /// Don't print log message about this, because we can have a lot of fetches,
+        /// for example during replica recovery.
+        return false;
+    }
+    if (entry.type == LogEntry::MERGE_PARTS || entry.type == LogEntry::MUTATE_PART)
+    {
+        /** If any of the required parts are now fetched or in merge process, wait for the end of this operation.
+          * Otherwise, even if all the necessary parts for the merge are not present, you should try to make a merge.
+          * If any parts are missing, instead of merge, there will be an attempt to download a part.
+          * Such a situation is possible if the receive of a part has failed, and it was moved to the end of the queue.
+          */
+        size_t sum_parts_size_in_bytes = 0;
+        for (const auto & name : entry.source_parts)
+        {
+            if (future_parts.count(name))
+            {
+                const char * format_str = "Not executing log entry {} of type {} for part {} "
+                                          "because part {} is not ready yet (log entry for that part is being processed).";
+                LOG_TRACE(log, format_str, entry.znode_name, entry.typeToString(), entry.new_part_name, name);
+                /// Copy-paste of above because we need structured logging (instead of already formatted message).
+                out_postpone_reason = fmt::format(format_str, entry.znode_name, entry.typeToString(), entry.new_part_name, name);
+                return false;
+            }
+
+            ....
+        }
+
+        if (merger_mutator.merges_blocker.isCancelled())
+        {
+            const char * format_str = "Not executing log entry {} of type {} for part {} because merges and mutations are cancelled now.";
+            ....
+            return false;
+        }
+
+        if (merge_strategy_picker.shouldMergeOnSingleReplica(entry))
+        {
+            auto replica_to_execute_merge = merge_strategy_picker.pickReplicaToExecuteMerge(entry);
+
+            if (replica_to_execute_merge && !merge_strategy_picker.isMergeFinishedByReplica(replica_to_execute_merge.value(), entry))
+            {
+                String reason = "Not executing merge for the part " + entry.new_part_name
+                    +  ", waiting for " + replica_to_execute_merge.value() + " to execute merge.";
+                out_postpone_reason = reason;
+                return false;
+            }
+        }
+
+        UInt64 max_source_parts_size = entry.type == LogEntry::MERGE_PARTS ? merger_mutator.getMaxSourcePartsSizeForMerge()
+                                                                           : merger_mutator.getMaxSourcePartSizeForMutation();
+        /** If there are enough free threads in background pool to do large merges (maximal size of merge is allowed),
+          * then ignore value returned by getMaxSourcePartsSizeForMerge() and execute merge of any size,
+          * because it may be ordered by OPTIMIZE or early with different settings.
+          * Setting max_bytes_to_merge_at_max_space_in_pool still working for regular merges,
+          * because the leader replica does not assign merges of greater size (except OPTIMIZE PARTITION and OPTIMIZE FINAL).
+          */
+        const auto data_settings = data.getSettings();
+        bool ignore_max_size = false;
+        if (entry.type == LogEntry::MERGE_PARTS)
+        {
+            ignore_max_size = max_source_parts_size == data_settings->max_bytes_to_merge_at_max_space_in_pool;
+
+            if (isTTLMergeType(entry.merge_type))
+            {
+                if (merger_mutator.ttl_merges_blocker.isCancelled())
+                {
+                    const char * format_str = "Not executing log entry {} for part {} because merges with TTL are cancelled now.";
+                    ...
+                    return false;
+                }
+                size_t total_merges_with_ttl = data.getTotalMergesWithTTLInMergeList();
+                if (total_merges_with_ttl >= data_settings->max_number_of_merges_with_ttl_in_pool)
+                {
+                    const char * format_str = "Not executing log entry {} for part {}"
+                        " because {} merges with TTL already executing, maximum {}.";
+                    ...
+                    return false;
+                }
+            }
+        }
+        if (!ignore_max_size && sum_parts_size_in_bytes > max_source_parts_size)
+        {
+            const char * format_str = "Not executing log entry {} of type {} for part {}"
+                " because source parts size ({}) is greater than the current maximum ({}).";
+            ...    
+            return false;
+        }
+        ...
+    }
+    
+    ...
+}
+```
+对于 GET_PART 类型的 log, 其检查逻辑在 StorageReplicatedMergeTree::canExecuteFetch 中
+```c++
+bool StorageReplicatedMergeTree::canExecuteFetch(const ReplicatedMergeTreeLogEntry & entry, String & disable_reason) const
+{
+    if (fetcher.blocker.isCancelled())
+    {
+        disable_reason = fmt::format("Not executing fetch of part {} because replicated fetches are cancelled now.", entry.new_part_name);
+        return false;
+    }
+
+    size_t busy_threads_in_pool = CurrentMetrics::values[CurrentMetrics::BackgroundFetchesPoolTask].load(std::memory_order_relaxed);
+    if (busy_threads_in_pool >= replicated_fetches_pool_size)
+    {
+        disable_reason = fmt::format("Not executing fetch of part {} because {} fetches already executing, max {}.", entry.new_part_name, busy_threads_in_pool, replicated_fetches_pool_size);
+        return false;
+    }
+
+    if (replicated_fetches_throttler->isThrottling())
+    {
+        disable_reason = fmt::format("Not executing fetch of part {} because fetches have already throttled by network settings "
+                                     "<max_replicated_fetches_network_bandwidth> or <max_replicated_fetches_network_bandwidth_for_server>.", entry.new_part_name);
+        return false;
+    }
+
+    return true;
+}
+```
+主要是三个可能的原因会导致 GET_PART log 不被执行：
+1. 主动禁止了 Replicated Fetch
+2. 后台执行 Fetch 任务的线程已经达到上限，该上限由 users.xml 的 background_fetches_pool_size 决定
+3. Fetch 的网络带宽限制
+
+最常见的 GET_PART log 被推迟是因为原因2。
+
+对于 MERGE_PARTS log，值得注意的被推迟执行的原因为：
+1. future_parts 中包含了 merge 需要的 source parts
+2. 如果是 ttl merge，那么同时可以执行的 ttl merge 不能超过两个
+3. merge 的 source parts size 大于 max_source_parts_size 时，当前 merge 会被推迟执行。
+
+future_parts 是 ReplicatedMergeTreeQueue 的一个成员变量，当某条 log 被函数 selectEntryToProcess 选择，为其创建标记其正在执行的CurrentlyExecuting对象时，会将 log 的 new_part_name 字段添加到 future_parts 中，当 CurrentlyExecuting 对象被析构的时候，会从 future_parts 中将该字段删除。
 
 ## 异常处理
 
@@ -617,7 +809,128 @@ void StorageReplicatedMergeTree::clearOldPartsAndRemoveFromZK() {
 ### DELETE WHERE
 `ALTER TABLE ... DELETE WEHER ...`
 
+### ATTACH PARTITION
+`ALTER table attach_debug ATTACH PARTITION 10001`
 
+调用链：
+
+    InterpreterAlterQuery::execute
+        MergeTreeData::alterPartition
+            StorageMergeTree::attachPartition
+                MergeTreeData::tryLoadPartsToAttach
+                StorageMergeTree::renameTempPartAndAdd
+
+`ATTACH PARTITION` 作用是将处于 `detached` 目录下的 part 重新添加到 table 的 relative path 目录下，并且在内存中将其重新可见。
+
+
+**MergeTreeData::tryLoadPartsToAttach**
+
+该函数检查磁盘上哪些 part 可以被 attach partition，并且在这些 part 的文件名前添加前缀 attaching_ 以防止被重复 attach。完成磁盘上的操作后，通过 createPart 函数，为这些 part 创建能够代表该 part 的内存数据结构。
+
+```c++
+MergeTreeData::MutableDataPartsVector MergeTreeData::tryLoadPartsToAttach(const ASTPtr & partition, bool attach_part,
+        ContextPtr local_context, PartsTemporaryRename & renamed_parts)
+{
+    ...
+    /// 遍历 detached/ 目录下的所有 part，找到 partition name 相同的 part
+    ActiveDataPartSet active_parts(format_version);
+    for (const auto & disk : disks)
+    {
+        for (auto it = disk->iterateDirectory(relative_data_path + source_dir); it->isValid(); it->next())
+        {
+            /// 10001_4_4_0
+            const String & name = it->name();
+            ...
+            active_parts.add(name);
+            name_to_disk[name] = disk;
+        }
+    }
+
+    /// active_parts 记录了所有的可以被 attach 的 part 信息
+    /// 需要将这些part在磁盘上的文件名 rename 成 attaching_xxxx，以避免重复 attch
+    /// Inactive parts are renamed so they can not be attached in case of repeated ATTACH.
+    /// name_to_disk 记录 part_name -> IDisk
+    /// renamed_parts 记录了这些所有被 rename 过的 part 信息
+    for (const auto & [name, disk] : name_to_disk)
+    {
+        const String containing_part = active_parts.getContainingPart(name);
+
+        if (!containing_part.empty() && containing_part != name)
+            // TODO maybe use PartsTemporaryRename here?
+            disk->moveDirectory(relative_data_path + source_dir + name,
+                relative_data_path + source_dir + "inactive_" + name);
+        else
+            renamed_parts.addPart(name, "attaching_" + name);
+    }
+
+    /// Try to rename all parts before attaching to prevent race with DROP DETACHED and another ATTACH.
+    /// 给 detached 下所有目标 part 加前缀 attaching
+    renamed_parts.tryRenameAll()
+
+    ...
+    ///
+    MutableDataPartsVector loaded_parts;
+    loaded_parts.reserve(renamed_parts.old_and_new_names.size());
+
+    for (const auto & [old_name, new_name] : renamed_parts.old_and_new_names)
+    {
+        LOG_DEBUG(log, "Checking part {}", new_name);
+
+        auto single_disk_volume = std::make_shared<SingleDiskVolume>("volume_" + old_name, name_to_disk[old_name]);
+        MutableDataPartPtr part = createPart(old_name, single_disk_volume, source_dir + new_name);
+
+        loadPartAndFixMetadataImpl(part);
+        loaded_parts.push_back(part);
+    }
+
+    return loaded_parts;
+}
+```
+
+
+
+loaded_parts
+<img alt="picture 2" src="../../images/4531e2b5f505e86e0c9e1beefc56252f9f30a9341fc275ed742377924f698466.png" />  
+
+renamed_parts
+
+<img alt="picture 1" src="../../images/de8365b4507e246c89f3e389f53d795d1473fcb9ab55b0501f4a4683b0c65725.png" />  
+
+
+**MergeTreeData::renameTempPartAndReplace**
+```c++
+bool MergeTreeData::renameTempPartAndReplace(
+    MutableDataPartPtr & part, SimpleIncrement * increment, Transaction * out_transaction,
+    std::unique_lock<std::mutex> & lock, DataPartsVector * out_covered_parts, MergeTreeDeduplicationLog * deduplication_log)
+{
+    ...
+    part->assertState({DataPartState::Temporary});
+    ...
+    /// 确保 part 的 partition_id 与现有 partition 下 part 的 partition_id 相同
+    if (DataPartPtr existing_part_in_partition = getAnyPartInPartition(part->info.partition_id, lock))
+    {
+        if (part->partition.value != existing_part_in_partition->partition.value)
+            throw Exception(
+                "Partition value mismatch between two parts with the same partition ID. Existing part: "
+                + existing_part_in_partition->name + ", newly added part: " + part->name,
+                ErrorCodes::CORRUPTED_DATA);
+    }
+
+    /// 更新 part 的 min & max block id 
+    /** It is important that obtaining new block number and adding that block to parts set is done atomically.
+      * Otherwise there is race condition - merge of blocks could happen in interval that doesn't yet contain new part.
+      */
+    if (increment)
+    {
+        part_info.min_block = part_info.max_block = increment->get();
+        part_info.mutation = 0; /// it's equal to min_block by default
+        part_name = part->getNewName(part_info);
+    }
+    else /// Parts from ReplicatedMergeTree already have names
+        part_name = part->name;
+
+}
+```
 
 ## 其他线程
 ### ReplicatedMergeTreeRestartingThread

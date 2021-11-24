@@ -119,7 +119,7 @@ total 24
 -rw-r-----  1 hzq  wheel   112B Sep 17 10:36 data.mrk3
 -rw-r-----  1 hzq  wheel    16B Sep 17 10:36 primary.idx
 ```
-然后通过`finalizePartOnDisk(new_part, part_columns, checksums, sync)`完成其余元信息的写入
+然后通过`finalizePartOnDisk(new_part, part_columns, checksums, sync)`完成其余元信息的写入。
 ```bash
 ➜  tmp_insert_1_1_1_0 ls -lh
 total 72
@@ -133,6 +133,8 @@ total 72
 -rw-r-----  1 hzq  wheel     8B Sep 17 10:37 partition.dat
 -rw-r-----  1 hzq  wheel    16B Sep 17 10:36 primary.idx
 ```
+在构造 MergedBlockOutputStream 对象时，最后一个参数传入了一个 default_code。
+
 #### MergeTreeData::renameTempPartAndReplace
 TODO:需要详细分析其中的冲突检测逻辑
 
