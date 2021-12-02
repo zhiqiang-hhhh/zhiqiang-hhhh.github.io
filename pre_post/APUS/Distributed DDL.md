@@ -274,3 +274,104 @@ Block DDLQueryStatusInputStream::readImpl(){
 }
 ```
 `columns`就是提到的内存表。其内容则是根据Zookeeper中node的内容计算出来的结果。
+
+
+## FE DDL 并发
+FE上一个DDL的完整执行周期内，最少涉及到3个线程的参与：
+
+1. submit job
+
+```java
+public CHDDLJob submitDDLJob(TExecCHDDLReq request) {
+    long backendId = request.getHeader().getBackendId();
+    String tenantName = systemInfoService.getBackend(backendId).getOwnerClusterName();
+    CHTenant tenant = nameToTenant.get(tenantName);
+
+    tenant.WriteLock();
+    CHDDLJob job = null;
+
+    try {
+        ...
+        job = new CHDDLJob(...);
+    } final {
+        tenant.WriteUnLock();
+    }
+
+    jobHandler.submitJob(job)
+    return job;
+}
+```
+创建 job 以及 init job 期间，整个 tenant 被加了写锁，tenant 包含的字段如下：
+```plantuml
+class CHTenant {
+    - tenantName : String
+    - tenantId : long
+    - idToCHCluster : Map<Long, CHCluster>
+    - nameToCHCluster : Map<String, CHCluster>
+    - idToDb : Map<String, CHDatabase>
+    - nameToDb : Map<String, CHDatabase>
+    - tabletInvertIndex : CHTabletInvertIndex
+}
+
+CHTenant *-- CHTabletInvertIndex
+
+class CHTabletInvertIndex {
+    + uidToTablet : Map<String, CHTablet>
+    + addTablet(CHTablet) : void
+    + getTablet(String tabletId) : CHTablet
+}
+
+CHTenant *-- CHCluster
+
+class CHCluster{
+    - tenantId : long
+    - clusterId : long
+    - clusterName : String
+    - shards : Map<Integer, CHShard>
+}
+
+CHTenant *-- CHDatabase
+
+class CHDatabase {
+    - databaseUid : String
+    - databaseName : String
+    - idToTable : Map<String, CHTable>
+    - nameToTable : Map<String, CHTable>
+}
+```
+submit job 期间，CHDDLJobHandler 加写锁，保护 CHDDLJobHandler 的 runningJobs 以及 finishedJobs 字段
+
+2. CHDDLJobHandler::runAfterCatalogReady
+ 
+```java
+protected void runAfterCatalogReady() {
+    WriteLock();
+    for (job : runningJobs) {
+        CHTenant chTenant = Catalog.getCurrentCatalog().getTenantMgr().getTenant(chddlJob.getTenantId());
+        chTenant.WriteLock();
+        chTenant.executeTask(
+            ...
+            job.run();
+            ...
+            job.cancelJob() // If necessary
+        )
+        chTenant.WriteUnLock();
+    }
+    WriteUnLock();
+}
+```
+
+runAfterCatalogReady 执行期间 lock 有重叠的情况：先对 CHDDLJobHandler 加写锁，然后再对 tenant 加写锁
+
+3. finish task
+
+```java
+public TMasterResult finishTask(TFinishTaskRequest request){
+    ...
+    AgentTask task = AgentTaskQueue.getTask(backendId, taskType, signature);
+    ...
+    finishCHDDLTask(task, request)
+    ...
+}
+```
+finish task 阶段只涉及到 task 对象的访问。此阶段可能会与执行 CHDDLJobHandler::runAfterCatalogReady() 函数的线程有竞争。
