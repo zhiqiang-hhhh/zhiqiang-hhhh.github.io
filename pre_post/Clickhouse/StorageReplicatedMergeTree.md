@@ -6,7 +6,7 @@ ReplicatedMergeTree 相比普通的 MergeTree 最大的区别在于添加了不�
 
 以 INSERT INTO TABLE 为例先看一下 ReplicatedMergeTree 任务管理的整体流程
 ### Initial 节点
-initial 节点的写入过程总体来看需要完成两个任务，首先是 part 在本地的写入，其次是在 zk 中创建一条 log 告诉其他 replica 需要进行 fetch。
+initial 节点的写入过程总体来看需要完成两个任务，首先是 part 在本地的写入，其次是在 zk 中创建一条 log 告诉其他 replica (实际上包含自己) 需要进行 fetch。
 ```c++
 void ReplicatedMergeTreeBlockOutputStream::write(const Block & block)
 {
