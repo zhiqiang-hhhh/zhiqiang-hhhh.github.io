@@ -3,7 +3,7 @@
 # StorageMergeTree
 ## 目录组织
 <center>
-<img alt="picture 1" src="../../images/05a80b909f51d97ac05537f48cb8b0a8c9a8cf5d9acc5287001b95ed75265268.png" height="600px" width="700px"/>  
+<img alt="picture 1" src="../../images/b54750afebc9e83dd903f9da36c39d1138725a13dc91009d656d09fc58a838e1.png" height="600px" width="700px"/>  
 </center>
 
 path 是 config.xml 中的 path 字段指定的路径。该路径下保存所有的 meta 以及 data。
