@@ -1,4 +1,10 @@
 # Recovery
+
+Restore the database to the consistent state thst existsed before the failure.
+
+## Recovery and Atomicity
+To achieve our goal of atomicity, we must first output to stablee storage information describing the modification, without modifying the database itself.
+
 ## Shadow Paging
 ## Write-Ahead Logging
 
