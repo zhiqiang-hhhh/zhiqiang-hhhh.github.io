@@ -1,7 +1,7 @@
 [TOC]
 # Linking
 什么是链接：Linking is a process of collecting and combining various pieces of code and data into a single file that can be loaded (copied) into memory and executed.
-更加朴素的说法，链接是将输入的一组代码和数据的集合重新整理成一个文件，该文件可以被加载进内存并且运行。为什么单纯的代码和数据就不能被运行呢？因为通常来说，这些文件的格式无法被操作系统识别，操作系统把这些文件加载进内存后，按照自己的想法去内存的指定位置获取指令时就傻眼了，这指令我完全不认识啊，所以他们通常不能被执行。
+更加朴素的说法，链接是将输入的一组代码和数据的集合重新整理成一个文件，该文件可以被加载进内存并且运行。
 
 为了规范描述，我们这里将链接器的输入文件称为可重定位目标文件，将链接器的输出文件称为可执行目标文件，有时会忽略两者的目标二字。
 
@@ -25,7 +25,7 @@ int main()
 
 第二个任务，重定位，则是说，main.o 既然要跟 myheader.o 合并到一起，那么新文件里，已有的符号怎么安排呢？谁在前谁在后呢？这就是重定位做的事。
 
-## 目标文件
+## 7.4 可重定位目标文件
 目标文件分为三类：
 1. Relocatable object file
 2. Executable object file
@@ -36,22 +36,103 @@ int main()
 <center>
 <img alt="picture 1" src="../../images/17954b2887a9861eaa0812ae67097555e4fd158dbb6d298072352b0853528d48.png" height="300px" />  
 </center>
-上图中描述了一个典型的 ELF 格式的可重定位目标文件，具体每个部分的作用不详细说了只需要知道：
+上图中描述了一个典型的 ELF 格式的可重定位目标文件，具体每个部分的作用与内容还是通过一个例子学习一下：
+```c
+// m.c
+#include <stdio.h>
+void swap();
 
-1. ELF 描述了该文件的元信息（哪个平台产生的、字节序等）以及 Section header table 在哪，怎么解读其内容
-2. 节头部表（Section header table）描述了图里其他各个section的偏移量
-3. 其余所有section记录了指令、数据以及符号信息  
+int buf[2] = {1, 2};
 
-## 符号与符号表
+int main()
+{
+    printf("Main Start\n");
+    swap();
+    return 0;
+}
+
+// swap.c
+extern int buf[];
+
+int *bufp0 = &buf[0];
+int *bufp1;
+
+void swap()
+{
+     int temp;
+
+     bufp1 = &buf[1];
+     temp = *bufp0;
+     *bufp0 = *bufp1;
+     *bufp1 = temp;
+}
+```
+生成 m.o：
+```bash
+gcc -c m.c
+```
+首先看一下 ELF 头的内容，主要包含生成该文件的系统的信息以及帮助链接器进行语法分析和解读目标文件的信息。
+```bash
+readelf -e m.o
+ELF Header:
+  Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00
+  Class:                             ELF64
+  Data:                              2's complement, little endian
+  Version:                           1 (current)
+  OS/ABI:                            UNIX - System V
+  ABI Version:                       0
+  Type:                              REL (Relocatable file)
+  Machine:                           Advanced Micro Devices X86-64
+  Version:                           0x1
+  Entry point address:               0x0
+  Start of program headers:          0 (bytes into file)
+  Start of section headers:          608 (bytes into file)
+  Flags:                             0x0
+  Size of this header:               64 (bytes)
+  Size of program headers:           0 (bytes)
+  Number of program headers:         0
+  Size of section headers:           64 (bytes)
+  Number of section headers:         12
+  Section header string table index: 11
+```
+
+**.text** ：已编译程序的机器代码
+**.rodata**：只读数据，比如 printf 语句中的格式串
+```bash
+readelf -p 5 m.o
+
+String dump of section '.rodata':
+  [     0]  Main Start
+```
+
+**.data**：已初始化的全局和静态C变量
+**.bss**：未初始化的全局和静态C变量
+**.systab**：符号表，之后会介绍，主要是用于链接器进行符号解析和重定位
+**.debug**：调试符号表，使用 -g 参数编译才会得到该表
+**strtab**：字符串表，其内容包含 .systab 和 .debug 中的符号表以及 section header 中的 section name
+```bash
+ readelf -p 11 m.o
+
+String dump of section '.strtab':
+  [     1]  m.c
+  [     5]  buf
+  [     9]  main
+  [     e]  puts
+  [    13]  swap
+```
+
+## 7.5 符号与符号表
 每一个可重定位目标文件的模块 m 均包含一个符号表。该符号表记录了模块 m 定义以及引用的所有符号信息。在链接器的语境下，符号被分为三类：
 
 * 由模块 m 定义，且可以被其他模块引用的符号的全局符号。比如模块 m 中定义的 nonstatic function 以及 global variables
 * 被模块 m 引用，但是由其他模块定义的全局符号。比如 m1 引用了 m2 定义的 nonstatic function。
 * 由模块 m 定义并且只可以被模块 m 引用的本地符号。比如模块 m 中的 static function 以及 static global variables
 
-第三类中提到的本地符号并不包括函数的局部变量，链接器并不关系这类变量的地址。
+第三类中提到的本地符号并不包括任何 local nonstatic 变量，如函数的局部变量，链接器并不关心这类变量的地址。这类变量是在运行时被创建在栈上的。
 
-符号表被保存在目标文件的 .symtab 段内，符号表的每个项具有如下信息：
+**编译器负责为每个符号（不包括 local nonstatic）创建一个 unique name，汇编器将会使用这些 name 来构造符号表（symbol table）**
+
+符号表被保存在目标文件的 `.symtab` 段内，符号表的每个项具有如下信息：
 ```c
 typedef struct {
     int name;
@@ -63,11 +144,82 @@ typedef struct {
     long size;
 } Elf64_Symbol;
 ```
-name 字段可以简单理解为是符号的名称（实际上有区别），不过注意，这里符号名称并不一定就是符号在源码中的命名，通常是经过编码或者改写后的名字，目的是为了防止重复。对于可重定位目标文件，value 通常是该对象与其所在section开始位置的偏移量；对于可执行目标文件（链接后），value 通常是一个运行时的绝对地址。
+name 字段可以简单理解为是符号的名称（实际上有区别），不过注意，这里符号名称并不一定就是符号在源码中的命名，通常是经过编码或者改写后的名字，目的是为了防止重复，由编译器最初产生。
+
+value 是符号的地址，对于可重定位目标文件，value 是该符号到其所在 section 开始位置的偏移量；对于可执行目标文件（链接后），value 通常是一个运行时的绝对地址。
+
+size（bytes）是该对象的大小。type 字段表明符号类型，不是 data 就是 function。binding 字段表明该字段是 local （再次强调，不包含 local nonstatic）还是 global。
 
 其它字段具体含义不细说。
 
-使用 GNU readelf 程序可以检查对象文件的内容。
+我们已以下代码为例查看一下实际的符号表长什么样：
+```c
+// m.c
+void swap();
+
+int buf[2] = {1, 2};
+
+int main()
+{
+    swap();
+    return 0;
+}
+
+// swap.c
+extern int buf[];
+
+int *bufp0 = &buf[0];
+int *bufp1;
+
+void swap()
+{
+     int temp;
+
+     bufp1 = &buf[1];
+     temp = *bufp0;
+     *bufp0 = *bufp1;
+     *bufp1 = temp;
+}
+```
+生成 m.o，并通过 readelf 查看其符号表内容
+```bash
+gcc -c m.c
+
+readelf -s m.o
+```
+得到的精简版符号表：
+```bash
+Num:    Value          Size Type    Bind   Vis      Ndx Name
+...
+8: 0000000000000000       8 OBJECT  GLOBAL DEFAULT    3 buf
+9: 0000000000000000      21 FUNC    GLOBAL DEFAULT    1 main
+10: 0000000000000000      0 NOTYPE  GLOBAL DEFAULT  UND swap
+```
+这里 Ndx 表示该符号所在 section 在 section header 的偏移
+```bash
+readelf -S m.o
+
+There are 12 section headers, starting at offset 0x260:
+
+Section Headers:
+  [Nr] Name              Type             Address           Offset
+       Size              EntSize          Flags  Link  Info  Align
+  ...
+  [ 1] .text             PROGBITS         0000000000000000  00000040
+       0000000000000015  0000000000000000  AX       0     0     1
+  [ 2] .rela.text        RELA             0000000000000000  000001d0
+       0000000000000018  0000000000000018   I       9     1     8
+  [ 3] .data             PROGBITS         0000000000000000  00000058
+       0000000000000008  0000000000000000  WA       0     0     8
+  [ 4] .bss              NOBITS           0000000000000000  00000060
+       0000000000000000  0000000000000000  WA       0     0     1
+  ...
+  [ 9] .symtab           SYMTAB           0000000000000000  000000b0
+       0000000000000108  0000000000000018          10     8     8
+  ...
+```
+所以，buf 是一个被定义在 .data section 中偏移量为 0 字节的 8 字节对象，main 是一个被定义在 .text section 中偏移量为 0 字节的 21 字节函数对象。最后一个项来自对外部符号 swap 的引用。
+
 
 ## 符号解析
 符号解析就是链接器为所有的符号引用绑定一个符号表中的地址的过程。对于 local symbols，这一步很简单，因为符号的定义就在本模块内。对于 global symbols，编译器一旦遇到一个当前模块没有定义过的符号，它会假设其他模块有该符号的定义，同时在符号表里记录一个 linker symbol table entry，让链接器在链接的时候去其他模块里找。
@@ -203,5 +355,139 @@ gcc main.c /usr/lib/libc.a
 
 ## 重定位
 
-在符号解析阶段完成之后，链接器就为每个符号关联了其定义。此时，链接器就知道它的输入目标文件中，数据与代码段究竟有多大。此时它可以开始进行重定位阶段：**将输入的模块 merge 成一个文件，并且为每个符号设置运行时地址**。
+在符号解析阶段完成之后，链接器就为每个符号关联了其定义。此时，链接器就知道它的输入目标文件中，数据与代码段究竟有多大，也就可以为每个符号设置运行时地址。这些工作都是在重定位阶段完成的：**将输入的模块 merge 成一个文件，并且为每个符号设置运行时地址**。
 
+**重定位条目**
+
+重定位条目是由汇编器生成的，当汇编器遇到一个需要重定位的符号时，就会为其生成一个条重定位条目，其内容交给链接器解读，链接器根据重定位条目的内容决定如何修改 .text section 以及 .data section 中的内容。
+
+
+```c
+int sum(int *a, int n);
+
+int array[2] = {1, 2};
+
+int main()
+{
+    int val = sum(array, 2);
+    return val;
+}
+
+// sum.c
+int sum(int *a, int n)
+{
+    int i, s = 0;
+
+    for(i = 0; i < n; i++>) {
+        s += a[i];
+    }
+
+    return s;
+}
+```
+main.o 的反汇编代码，这部分就是 .text section 的内容
+```x86asm
+0000000000000000 <main>:
+   0:	55                   	push   %rbp
+   1:	48 89 e5             	mov    %rsp,%rbp
+   4:	48 83 ec 10          	sub    $0x10,%rsp
+   8:	be 02 00 00 00       	mov    $0x2,%esi
+   d:	bf 00 00 00 00       	mov    $0x0,%edi
+  12:	e8 00 00 00 00       	callq  17 <main+0x17>
+  17:	89 45 fc             	mov    %eax,-0x4(%rbp)
+  1a:	8b 45 fc             	mov    -0x4(%rbp),%eax
+  1d:	c9                   	leaveq
+  1e:	c3                   	retq
+```
+查看一下 main.o 的重定位条目，**代码的重定位条目放在`.rela.text`中，已初始化数据的重定位条目放在`.rela.data`中**
+```bash
+readelf -r main.o
+
+Relocation section '.rela.text' at offset 0x1d8 contains 2 entries:
+  Offset          Info           Type           Sym. Value    Sym. Name + Addend
+00000000000e  00080000000a R_X86_64_32       0000000000000000 array + 0
+000000000013  000a00000004 R_X86_64_PLT32    0000000000000000 sum - 4
+
+Relocation section '.rela.eh_frame' at offset 0x208 contains 1 entry:
+  Offset          Info           Type           Sym. Value    Sym. Name + Addend
+000000000020  000200000002 R_X86_64_PC32     0000000000000000 .text + 0
+```
+main.c 引用了两个全局符号：array 和 sum，为每个引用，汇编器会在对应的 section 产生一个重定位条目，具体内容如上。sum 的重定位条目类型为`R_X86_64_PLT32`（等价于老版本里的 R_X86_64_PC32），告诉编译器对 sum 的引用要使用 32 位 PC 相对地址进行重定位，对 array 的引用使用 32 位绝对地址进行重定位。
+
+**重定位符号引用**
+
+1. 重定位 PC 相对引用
+
+我们看到 main.o 的 .text 中偏移量为 0x12 的地方开始了指令 call，指令 call 本身编码后操作码为 e8 占 1 字节，后面的四个字节为对 sum 地址的占位符，这里占位符应该填什么，是在 sum 的重定位条目中描述的：
+```bash
+r.offset == 0x13
+r.symbol = sum
+r.type = R_X86_64_PLT32
+r.addend = -4
+```
+这个条目，告诉链接器，需要修改开始于偏移量 0x13（0x12 是 call 的位置，0x13 就是 sum 的地址应该被写入的位置）的 32 位 PC 相对引用，将其内容修改为 sum 定义所在的位置。
+
+2. 重定位绝对引用
+
+注意汇编代码的第 5 行，mov 指令将 array 的地址（一个 32 位立即数）复制到寄存器 %edi 中，mov 指令之后跟的一个对 array 的 32 位绝对引用的占位符。对应的重定位描述符为
+```bash
+r.offset == 0xe
+r.symbol = array
+r.type = R_X86_64_32
+r.addend = 0
+```
+
+
+总结一下，重定位符号引用的解析过程：
+1. assamble 在可重定位目标文件的 .text section 以及 .data section 重定位符号的所在的位置插入一个占位符；
+2. assamble 为每个可重定位符号创建一个重定位条目
+3. 链接器根据重定位条目修改代码段的指定位置，用实际的运行时地址替换这些占位符
+## 7.8 可执行目标文件
+<img alt="picture 1" src="../../images/96694ac4f88b7c659e60309604bc85b48d1c130b4e2dcabe49583b503c0a8980.png" height="300px"/>
+
+经过链接器的处理之后，我们得到了单一的可执行目标文件。其格式类似于可重定位目标文件。
+
+其中段头部表描述了，可执行目标文件的内存地址应该如何映射到目标文件的各个section。
+
+## 7.9 加载可执行目标文件
+
+任何Linux程序都可以通过调用 execve 函数来调用加载器。加载器将可执行目标文件中的代码和数据从磁盘复制到内存，然后通过跳转到程序的第一条指令或者入口点来运行该程序。
+
+加载器会为可执行目标文件创建内存映像，然后将可执行文件的chunk复制到代码段和数据段，然后将跳转到程序的入口点。
+
+对于所有的 C 程序，该入口点都是函数 _start。实现在系统目标文件 ctrl.o 中，该函数将会调用操作系统的进程启动函数 __libc_start_main，该函数定义在 libc.so 中。
+
+__libc_start_main 将会初始化执行环境，调用用户层的 main 函数。
+
+## 7.10 动态链接共享库
+静态库的问题：
+1. 一旦静态库需要更新，那么为了使用新的代码，我们需要重新编译可执行目标文件
+2. 有些函数，比如 printf，几乎会被所有的 C 程序使用，如果都采用静态库链接，那么内存中不同进程的 .text 段中将会有重复的 prinft 函数，这对于内存来说很浪费
+
+
+共享库所谓共享指两个方面：
+1. 某个特定的共享库在文件系统中只对应一个 .so 文件，其中的代码段和数据段被所有引用该库的可执行目标文件共享
+2. A single copy of the .text section of a shared library in memory can be shared by different running processes.
+
+<center>
+<img alt="picture 1" src="../../images/5626c2a7cda42113cc582fceed0a1c1296898e1d04bc53c1b3233188d62cd746.png" height="400px"/>  
+</center>
+
+动态连接的基本原理是，在生成可执行目标文件时，只做一些静态的链接，然后在程序被加载/运行时完成剩余的链接。这里的所谓静态链接，指链接器将一些重定位信息和符号表信息复制到部分链接的可执行目标文件内，在运行时，这些信息将足够用于解析 libvector.so 中的符号和数据的具体引用。部分链接的可执行文件中会包含一个特殊的 .interp section，这个section内包含动态链接器的路径名称（path of ld-linux.so）。加载器在加载部分链接的可执行文件时，不会直接把程序计数器设置为程序的入口点，而是加载且执行动态链接器。动态链接器完成：
+
+1. 将 libc.so 的代码和数据重定位到一些 memory segment；
+2. 将 libvector.so 的代码和数据重定位到 another memory segment；
+3. 将 prog21 中任何对 libc.so 和 libvector.so 的符号的引用重定位到前面 1 和 2 阶段指定的内存地址。
+
+## 7.11 Loading and Linking Shared Libraries from Applications
+前面一节讲了动态链接器如何链接动态库。实际上，应用程序可以显式地要求动态链接器在应用程序运行的时候去加载任意的动态链接库。CSAPP 对应的章节有例子，不细说了。
+
+## 7.12 Position-Independent Code（PIC）
+PIC 用于实现共享库。
+
+实现共享库的最朴素方法是固定每个进程的一段虚拟地址空间作为共享库的加载地址，但是：
+1. 如果某个进程没有用到共享库，这么这段虚拟地址被浪费；
+2. 需要确保每个共享库都的大小不会超过这段虚拟地址空间；
+3. 如果需要链接的共享库非常多，空间不够用。
+
+现代编译系统将共享模块的 code segment 编译成可以被加载到内存中的任意地址，而不需要链接器在链接时为其设置运行时地址。
