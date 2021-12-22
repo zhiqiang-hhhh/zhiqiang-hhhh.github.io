@@ -1,7 +1,7 @@
 [TOC]
 # Linking
 什么是链接：Linking is a process of collecting and combining various pieces of code and data into a single file that can be loaded (copied) into memory and executed.
-更加朴素的说法，链接是将输入的一组代码和数据的集合重新整理成一个文件，该文件可以被加载进内存并且运行。为什么单纯的代码和数据就不能被运行呢？因为通常来说，这些文件的格式无法被操作系统识别，操作系统把这些文件加载进内存后，按照自己的想法去内存的指定位置获取指令时就傻眼了，这指令我完全不认识啊，所以他们通常不能被执行。
+更加朴素的说法，链接是将输入的一组代码和数据的集合重新整理成一个文件，该文件可以被加载进内存并且运行。
 
 为了规范描述，我们这里将链接器的输入文件称为可重定位目标文件，将链接器的输出文件称为可执行目标文件，有时会忽略两者的目标二字。
 
@@ -464,6 +464,30 @@ __libc_start_main 将会初始化执行环境，调用用户层的 main 函数�
 1. 一旦静态库需要更新，那么为了使用新的代码，我们需要重新编译可执行目标文件
 2. 有些函数，比如 printf，几乎会被所有的 C 程序使用，如果都采用静态库链接，那么内存中不同进程的 .text 段中将会有重复的 prinft 函数，这对于内存来说很浪费
 
+
+共享库所谓共享指两个方面：
+1. 某个特定的共享库在文件系统中只对应一个 .so 文件，其中的代码段和数据段被所有引用该库的可执行目标文件共享
+2. A single copy of the .text section of a shared library in memory can be shared by different running processes.
+
 <center>
 <img alt="picture 1" src="../../images/5626c2a7cda42113cc582fceed0a1c1296898e1d04bc53c1b3233188d62cd746.png" height="400px"/>  
 </center>
+
+动态连接的基本原理是，在生成可执行目标文件时，只做一些静态的链接，然后在程序被加载/运行时完成剩余的链接。这里的所谓静态链接，指链接器将一些重定位信息和符号表信息复制到部分链接的可执行目标文件内，在运行时，这些信息将足够用于解析 libvector.so 中的符号和数据的具体引用。部分链接的可执行文件中会包含一个特殊的 .interp section，这个section内包含动态链接器的路径名称（path of ld-linux.so）。加载器在加载部分链接的可执行文件时，不会直接把程序计数器设置为程序的入口点，而是加载且执行动态链接器。动态链接器完成：
+
+1. 将 libc.so 的代码和数据重定位到一些 memory segment；
+2. 将 libvector.so 的代码和数据重定位到 another memory segment；
+3. 将 prog21 中任何对 libc.so 和 libvector.so 的符号的引用重定位到前面 1 和 2 阶段指定的内存地址。
+
+## 7.11 Loading and Linking Shared Libraries from Applications
+前面一节讲了动态链接器如何链接动态库。实际上，应用程序可以显式地要求动态链接器在应用程序运行的时候去加载任意的动态链接库。CSAPP 对应的章节有例子，不细说了。
+
+## 7.12 Position-Independent Code（PIC）
+PIC 用于实现共享库。
+
+实现共享库的最朴素方法是固定每个进程的一段虚拟地址空间作为共享库的加载地址，但是：
+1. 如果某个进程没有用到共享库，这么这段虚拟地址被浪费；
+2. 需要确保每个共享库都的大小不会超过这段虚拟地址空间；
+3. 如果需要链接的共享库非常多，空间不够用。
+
+现代编译系统将共享模块的 code segment 编译成可以被加载到内存中的任意地址，而不需要链接器在链接时为其设置运行时地址。
