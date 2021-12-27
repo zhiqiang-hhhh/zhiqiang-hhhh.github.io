@@ -231,8 +231,8 @@ Section Headers:
 
 在编译的时候，编译器会对每个 global 符号标记一个强弱类型，汇编器会将该信息记录在每个可重定位目标文件的符号表中。**函数以及初始化过的全局变量是强类型，未初始化的global variables是弱类型。**
 
-链接器采用如下规则来处理重复的符号名称：
-1. 不允许出翔具有相同名称的多个强类型符号
+链接器采用如下规则来处理**可重定位目标文件中**重复的符号名称：
+1. 不允许出现具有相同名称的多个强类型符号
 2. 假如有一个强类型符号和多个弱类型符号具有相同名称，那么选择强类型符号
 3. 假如有多个具有相同名称的弱类型符号，选择其中任一一个
 
@@ -352,6 +352,53 @@ gcc main.c /usr/lib/libc.a
 * 如果在链接器处理完所有的文件后，集合 U 依然非空，那么就会打印错误信息。
 
 因此，目标文件传递到链接器的命令行参数顺序非常重要。**如果定义了未定义符号的库文件出现的顺序在可重定位目标文件之前，那么引用将会失败，链接终止**。通常来说，库文件一定要放在编译参数的最后。如果库文件之间不是独立的，那么我们必须要保证，引用出现在定义之前。如果必要的话，库文件是可以倍多次输入给链接器的。
+
+我们前面介绍链接器处理重复定义符号的规则时，强调了该规则是对应可重定位目标文件的，在处理链接静态链接库中的重复定义符号时，规则不同。
+```c++
+// main.cpp
+#include "foo.h"
+
+int main()
+{
+    funcA();
+    return 0;
+}
+
+// foo.h
+void funcA();
+
+// foo1.cpp
+#include <iostream>
+
+void funcA() { std::cout << "foo1::funcA()\n"; }
+
+// foo2.cpp
+#include <iostream>
+
+void funcA() {std::cout << "foo2::funcA()\n"; }
+```
+假如我们把 foo1.cpp 和 foo2.cpp 都编译成可重定位目标文件，然后与 main.o 链接，那么会报 funcA 重复定义的错误：
+```bash
+clang++ -o foo1.o -c foo1.cpp
+clang++ -o foo2.o -c foo2.cpp
+
+clang++ -Wall -o main main.cpp foo1.o foo2.o
+duplicate symbol 'funcA()' in:
+    foo1.o
+    foo2.o
+ld: 1 duplicate symbol for architecture x86_64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+```
+但是如果是编译成两个静态链接库，然后再与 main.o 链接，则链接器不会报错，而是选择找到的第一个符号：
+```bash
+ar rcs foo1.a foo1.o
+ar rcs foo2.a foo2.o
+
+clang++ -o main main.cpp foo1.a foo2.a
+./main
+foo1::funcA()
+```
+
 
 ## 重定位
 
