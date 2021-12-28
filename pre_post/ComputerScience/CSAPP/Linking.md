@@ -21,7 +21,7 @@ int main()
     return 0;
 }
 ```
-编译器编译的时候在 myheader.h 中只找到了 `myheader::Func()` 的声明，没找到定义啊，定义在 myheader.cpp 里呢，编译器把 myheader.cpp 编译后得到了 myheader.o。main.o 跟 myheader.o 输入给链接器以后，链接器就去找到 myheader.o 中 Func 的位置，填到 main.o 中合适的位置。这个过程就是 symbol resolution，当然我这里说的很粗糙，但是就这么个整体意思。
+编译器编译的时候在 myheader.h 中只找到了 `myheader::Func()` 的声明，没找到定义啊，定义在 myheader.cpp 里呢，编译器汇编器把 myheader.cpp 编译后得到了 myheader.o。main.o 跟 myheader.o 输入给链接器以后，链接器就去找到 myheader.o 中 Func 的位置，填到 main.o 中合适的位置。这个过程就是 symbol resolution，当然我这里说的很粗糙，但是就这么个整体意思。
 
 第二个任务，重定位，则是说，main.o 既然要跟 myheader.o 合并到一起，那么新文件里，已有的符号怎么安排呢？谁在前谁在后呢？这就是重定位做的事。
 
@@ -34,8 +34,9 @@ int main()
 所有的这三类目标文件都具有相同的文件格式，称为对象文件格式。在现代的 x86-64 Linux 系统以及 UNIX 系统上，使用 Executable and Linkable Format(ELF)，其他系统使用不同的对象文件格式。目标文件中的内容，包含三部分，指令，数据以及格式信息，格式信息告诉使用者（链接器与加载器）如何解读指令与数据。
 
 <center>
-<img alt="picture 1" src="../../images/17954b2887a9861eaa0812ae67097555e4fd158dbb6d298072352b0853528d48.png" height="300px" />  
+<img alt="picture 1" src="../../../images/17954b2887a9861eaa0812ae67097555e4fd158dbb6d298072352b0853528d48.png" height="300px" />  
 </center>
+
 上图中描述了一个典型的 ELF 格式的可重定位目标文件，具体每个部分的作用与内容还是通过一个例子学习一下：
 ```c
 // m.c
@@ -73,7 +74,7 @@ gcc -c m.c
 ```
 首先看一下 ELF 头的内容，主要包含生成该文件的系统的信息以及帮助链接器进行语法分析和解读目标文件的信息。
 ```bash
-readelf -e m.o
+[root@VM-211-238-centos csapp]# readelf -e main.o
 ELF Header:
   Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00
   Class:                             ELF64
@@ -86,14 +87,49 @@ ELF Header:
   Version:                           0x1
   Entry point address:               0x0
   Start of program headers:          0 (bytes into file)
-  Start of section headers:          608 (bytes into file)
+  Start of section headers:          688 (bytes into file)
   Flags:                             0x0
   Size of this header:               64 (bytes)
   Size of program headers:           0 (bytes)
   Number of program headers:         0
   Size of section headers:           64 (bytes)
   Number of section headers:         12
-  Section header string table index: 11
+  Section header string table index: 1
+
+Section Headers:
+  [Nr] Name              Type             Address           Offset
+       Size              EntSize          Flags  Link  Info  Align
+  [ 0]                   NULL             0000000000000000  00000000
+       0000000000000000  0000000000000000           0     0     0
+  [ 1] .strtab           STRTAB           0000000000000000  00000222
+       0000000000000089  0000000000000000           0     0     1
+  [ 2] .text             PROGBITS         0000000000000000  00000040
+       0000000000000030  0000000000000000  AX       0     0     16
+  [ 3] .rela.text        RELA             0000000000000000  000001c0
+       0000000000000048  0000000000000018          11     2     8
+  [ 4] .data             PROGBITS         0000000000000000  00000070
+       0000000000000008  0000000000000000  WA       0     0     4
+  [ 5] .rodata.str1.1    PROGBITS         0000000000000000  00000078
+       000000000000000c  0000000000000001 AMS       0     0     1
+  [ 6] .comment          PROGBITS         0000000000000000  00000084
+       0000000000000041  0000000000000001  MS       0     0     1
+  [ 7] .note.GNU-stack   PROGBITS         0000000000000000  000000c5
+       0000000000000000  0000000000000000           0     0     1
+  [ 8] .eh_frame         X86_64_UNWIND    0000000000000000  000000c8
+       0000000000000038  0000000000000000   A       0     0     8
+  [ 9] .rela.eh_frame    RELA             0000000000000000  00000208
+       0000000000000018  0000000000000018          11     8     8
+  [10] .llvm_addrsig     LOOS+0xfff4c03   0000000000000000  00000220
+       0000000000000002  0000000000000000   E      11     0     1
+  [11] .symtab           SYMTAB           0000000000000000  00000100
+       00000000000000c0  0000000000000018           1     4     8
+Key to Flags:
+  W (write), A (alloc), X (execute), M (merge), S (strings), I (info),
+  L (link order), O (extra OS processing required), G (group), T (TLS),
+  C (compressed), x (unknown), o (OS specific), E (exclude),
+  l (large), p (processor specific)
+
+There are no program headers in this file.
 ```
 
 **.text** ：已编译程序的机器代码
@@ -111,7 +147,7 @@ String dump of section '.rodata':
 **.debug**：调试符号表，使用 -g 参数编译才会得到该表
 **strtab**：字符串表，其内容包含 .systab 和 .debug 中的符号表以及 section header 中的 section name
 ```bash
- readelf -p 11 m.o
+readelf -p 11 m.o
 
 String dump of section '.strtab':
   [     1]  m.c
@@ -195,7 +231,7 @@ Num:    Value          Size Type    Bind   Vis      Ndx Name
 9: 0000000000000000      21 FUNC    GLOBAL DEFAULT    1 main
 10: 0000000000000000      0 NOTYPE  GLOBAL DEFAULT  UND swap
 ```
-这里 Ndx 表示该符号所在 section 在 section header 的偏移
+这里 Ndx 表示该符号在 section header 的第几个 section 中：
 ```bash
 readelf -S m.o
 
@@ -218,11 +254,11 @@ Section Headers:
        0000000000000108  0000000000000018          10     8     8
   ...
 ```
-所以，buf 是一个被定义在 .data section 中偏移量为 0 字节的 8 字节对象，main 是一个被定义在 .text section 中偏移量为 0 字节的 21 字节函数对象。最后一个项来自对外部符号 swap 的引用。
+所以，buf 是一个被定义在 .data section 中偏移量为 0 字节的 8 字节对象，main 是一个被定义在 .text section 中偏移量为 0 字节的 21 字节函数对象。swap 的 Ndx 为 UND，表示在该目标文件内没找到该符号的定义。
 
 
 ## 符号解析
-符号解析就是链接器为所有的符号引用绑定一个符号表中的地址的过程。对于 local symbols，这一步很简单，因为符号的定义就在本模块内。对于 global symbols，编译器一旦遇到一个当前模块没有定义过的符号，它会假设其他模块有该符号的定义，同时在符号表里记录一个 linker symbol table entry，让链接器在链接的时候去其他模块里找。
+符号解析就是链接器为所有的符号引用绑定一个符号表中的符号的过程。对于 local symbols，这一步很简单，因为符号的定义就在本模块内。对于 global symbols，编译器一旦遇到一个当前模块没有定义过的符号，它会假设其他模块有该符号的定义，同时在符号表里记录一个 linker symbol table entry，让链接器在链接的时候去其他模块里找。
 
 然而，有可能多个目标文件里定义了具有相同名字的符号。那么链接器必须处理这种情况（报错或者找到正确的定义），在 Linux 系统上，这种问题的处理需要编译器、汇编器以及链接器一起配合。
 
@@ -399,6 +435,7 @@ clang++ -o main main.cpp foo1.a foo2.a
 foo1::funcA()
 ```
 
+关于重复符号定义问题，会有一份专门的笔记。
 
 ## 重定位
 
@@ -490,7 +527,9 @@ r.addend = 0
 2. assamble 为每个可重定位符号创建一个重定位条目
 3. 链接器根据重定位条目修改代码段的指定位置，用实际的运行时地址替换这些占位符
 ## 7.8 可执行目标文件
-<img alt="picture 1" src="../../images/96694ac4f88b7c659e60309604bc85b48d1c130b4e2dcabe49583b503c0a8980.png" height="300px"/>
+<center>
+<img alt="picture 1" src="../../../images/96694ac4f88b7c659e60309604bc85b48d1c130b4e2dcabe49583b503c0a8980.png" height="300px"/>
+</center>
 
 经过链接器的处理之后，我们得到了单一的可执行目标文件。其格式类似于可重定位目标文件。
 
@@ -517,7 +556,7 @@ __libc_start_main 将会初始化执行环境，调用用户层的 main 函数�
 2. A single copy of the .text section of a shared library in memory can be shared by different running processes.
 
 <center>
-<img alt="picture 1" src="../../images/5626c2a7cda42113cc582fceed0a1c1296898e1d04bc53c1b3233188d62cd746.png" height="400px"/>  
+<img alt="picture 1" src="../../../images/5626c2a7cda42113cc582fceed0a1c1296898e1d04bc53c1b3233188d62cd746.png" height="400px"/>  
 </center>
 
 动态连接的基本原理是，在生成可执行目标文件时，只做一些静态的链接，然后在程序被加载/运行时完成剩余的链接。这里的所谓静态链接，指链接器将一些重定位信息和符号表信息复制到部分链接的可执行目标文件内，在运行时，这些信息将足够用于解析 libvector.so 中的符号和数据的具体引用。部分链接的可执行文件中会包含一个特殊的 .interp section，这个section内包含动态链接器的路径名称（path of ld-linux.so）。加载器在加载部分链接的可执行文件时，不会直接把程序计数器设置为程序的入口点，而是加载且执行动态链接器。动态链接器完成：
