@@ -15,49 +15,27 @@ void ReplicatedMergeTreeBlockOutputStream::write(const Block & block)
 
     for (auto & current_block : part_blocks)
     {
-        Stopwatch watch;
-
+        ...
         /// Write part to the filesystem under temporary name. Calculate a checksum.
-
         MergeTreeData::MutableDataPartPtr part = storage.writer.writeTempPart(current_block, metadata_snapshot, optimize_on_insert);
-
-        /// If optimize_on_insert setting is true, current_block could become empty after merge
-        /// and we didn't create part.
-        if (!part)
-            continue;
-
-        String block_id;
-
-        if (deduplicate)
-        {
-            /// We add the hash from the data and partition identifier to deduplication ID.
-            /// That is, do not insert the same data to the same partition twice.
-            block_id = part->getZeroLevelPartBlockID();
-
-            LOG_DEBUG(log, "Wrote block with ID '{}', {} rows", block_id, current_block.block.rows());
-        }
-        else
-        {
-            LOG_DEBUG(log, "Wrote block with {} rows", current_block.block.rows());
-        }
-
+        String block_id = part->getZeroLevelPartBlockID();
+        ...
         try
         {
             commitPart(zookeeper, part, block_id);
-
-            /// Set a special error code if the block is duplicate
-            int error = (deduplicate && last_block_is_duplicate) ? ErrorCodes::INSERT_WAS_DEDUPLICATED : 0;
-            PartLog::addNewPart(storage.getContext(), part, watch.elapsed(), ExecutionStatus(error));
         }
         catch (...)
         {
-            PartLog::addNewPart(storage.getContext(), part, watch.elapsed(), ExecutionStatus::fromCurrentException(__PRETTY_FUNCTION__));
+            ...
             throw;
         }
     }
 }
 ```
-这段函数不长，所以我把全部代码贴过来。在 commitPart 之前的部分很简单，这里不再做详细解释，参考 MergeTree 的写入过程。commitPart 函数比较复杂的部分在于各种异常处理，我们这里只列出正常处理过程伪代码。
+上面这段代码记录了 write 函数的主要流程。在 commitPart 之前的部分很简单，这里不再做详细解释，参考 MergeTree 的写入过程。
+需要关注的是这里的 block_id，在 writeTempPart 中将会根据 block 中数据的内容为其计算一个 hash 值，由 {partition_id}_{hash} 组成该 block 的 block_id，后续用于 part 的 deduplication。
+
+commitPart 函数比较复杂的部分在于各种异常处理，我们这里只列出正常处理过程的代码。
 ```c++
 void ReplicatedMergeTreeBlockOutputStream::commitPart(
     zkutil::ZooKeeperPtr & zookeeper, MergeTreeData::MutableDataPartPtr & part, const String & block_id)
@@ -93,15 +71,89 @@ void ReplicatedMergeTreeBlockOutputStream::commitPart(
 }
 ```
 commitPart 过程分为三步：
-1. 在 zk 中添加 part
-2. 创建一条 GET_PART log
+1. allocate block number & deduplicate
+2. create GET_PART log, record part in zookeeper
 3. rename temp part
 
 结合一个实际的例子来看看以上三个步骤完成的具体操作。
+
+* **allocate block number & deduplicate**
+
 ```bash
 INSERT INTO TABLE insertDebug VALUES (100, 10000, 1),(101, 10001, 2),(102, 10002, 3),(103, 10003, 4),(104, 10004, 1)
 ```
 block 切分之后得到的第一个 part 内容包含 `(100, 10000, 1),(104, 10004, 1)`，block_id 内容根据 part 内容计算这里为`1_11848747669222048964_7469084187050794676`，用于数据输入时候的去重。
+
+```c++
+std::optional<EphemeralLockInZooKeeper>
+StorageReplicatedMergeTree::allocateBlockNumber(
+    const String & partition_id, const zkutil::ZooKeeperPtr & zookeeper, const String & zookeeper_block_id_path, const String & zookeeper_path_prefix)
+{
+    ...
+    /// Lets check for duplicates in advance, to avoid superfluous block numbers allocation
+    Coordination::Requests deduplication_check_ops;
+    if (!zookeeper_block_id_path.empty())
+    {
+        deduplication_check_ops.emplace_back(zkutil::makeCreateRequest(zookeeper_block_id_path, "", zkutil::CreateMode::Persistent));
+        deduplication_check_ops.emplace_back(zkutil::makeRemoveRequest(zookeeper_block_id_path, -1));
+    }
+
+    String block_numbers_path = fs::path(zookeeper_table_path) / "block_numbers";
+    String partition_path = fs::path(block_numbers_path) / partition_id;
+    ...
+    try
+    {
+        lock = EphemeralLockInZooKeeper(
+            fs::path(partition_path) / "block-", fs::path(zookeeper_table_path) / "temp", *zookeeper, &deduplication_check_ops);
+    }
+    catch (const zkutil::KeeperMultiException & e)
+    {
+        if (e.code == Coordination::Error::ZNODEEXISTS && e.getPathForFirstFailedOp() == zookeeper_block_id_path)
+            return {};
+
+        throw Exception("Cannot allocate block number in ZooKeeper: " + e.displayText(), ErrorCodes::KEEPER_EXCEPTION);
+    }
+    catch (const Coordination::Exception & e)
+    {
+        throw Exception("Cannot allocate block number in ZooKeeper: " + e.displayText(), ErrorCodes::KEEPER_EXCEPTION);
+    }
+
+    return {std::move(lock)};
+
+}
+```
+首先创建用于检查是否有重复内容 part 的操作，检查的原理就是尝试在 table_path/blocks 下创建一个与 block_id 同名的持久化的 znode，如果创建成功说明未重复，否则说明该 part 为重复 part。注意，这里如果创建成功，还会紧跟一个 remove node 操作，后续在 record part in zookeeper 的时候会将该 node 重新创建。在 EphemeralLockInZooKeeper 中将该操作提交 zookeeper 执行，并且尝试 allocate block number
+
+考虑多写情景，如果客户端在两个 replica 上同时写某个 partition，我们需要保证 block number 在两个 replica 上的顺序性。该顺序性是通过 zk 的 [sequential node](https://zookeeper.apache.org/doc/r3.4.10/zookeeperProgrammers.html#Sequence+Nodes+--+Unique+Naming) 实现的。zk 中创建 znode 共有[四种模式](https://zookeeper.apache.org/doc/r3.2.2/api/org/apache/zookeeper/CreateMode.html)，我们这里需要关注的是`EPHEMERAL_SEQUENTIAL`：The znode will be deleted upon the client's disconnect, and its name will be appended with a monotonically increasing number.
+
+EphemeralLockInZooKeeper 对象构造时会尝试在 zk 上创建两个节点，并且完成提供的去重操作。两个节点的类型均为 `EPHEMERAL_SEQUENTIAL`，一个是代表正在被写入的part，路径为 table_path/block_numbers/partitiond_id/block_xxxxx ，另一个是 table_path/temp/abandonable_lock-xxxxx，前者引用后者。
+
+以我们写入的第一个 part 为例，partition_id = 1，由于是第一次在当前 partition 插入 znode，那么这个 block 就可以获得 number 0000000000，同样 temp 下也是第一次插入 znode，那么其唯一的 id 也是 0000000000
+
+<center>
+<img alt="picture 1" src="../../images/fd7d7846e65030a93516b15c70dec358468f4af0a1467a09ab521d7a266bdedc.png" height="400px" />  
+</center>
+
+当我们处理完第一个 part，连接断开，partition 下的 `block_` 和 temp 下的 `abandonable_lock` 都会被自动删除，第二个 part 的 partition id 为 2，重复上述过程，我们可以得到
+
+<center>
+<img alt="picture 2" src="../../images/19579eca222a612ebd53bccf43a501762105ee34095efaf67a30f276e5616c2d.png" height="400px"/>  
+</center>
+ 
+上述过程是在 EphemeralLockInZooKeeper 对象构造时完成的，返回的 lock 对象将会包含 `block_` 后跟随的 sequential number，然后该 number 将会被赋值给 part
+```c++
+lock = EphemeralLockInZooKeeper(
+            partition_path + "/block-", zookeeper_path + "/temp", *zookeeper, &deduplication_check_ops);
+
+...
+block_number = block_number_lock->getNumber();
+part->info.min_block = block_number;
+part->info.max_block = block_number;
+...
+```
+实际上只需要 block_ 节点就足够保证 block number 的顺序性了，不是很明白这里 abandonable_lock_ 的作用。（代码注释是为了后向兼容）
+
+* **create GET_PART log, record part in zookeeper**
 
 当成功获得 block_number_lock 之后，在 zk 中创建一条 GET_PART log，内容如下：
 ```bash
@@ -114,7 +166,7 @@ get
 1_1_1_0
 part_type: Compact
 ```
-然后下一步将之前insert的临时part `tmp_insert_1_1_1_0` 重命名为 `1_1_1_0`，如果本次操作成功，将会把 part 信息真正注册到 zk 中如下：
+然后下一步将之前 insert 的临时 part `tmp_insert_1_1_1_0` 重命名为 `1_1_1_0`，如果本次操作成功，将会把 part 信息真正注册到 zk 中如下：
 ```bash
 [zk: localhost:2181(CONNECTED) 37] ls /clickhouse/tables/01/insertDebug/blocks
 [1_11848747669222048964_7469084187050794676]
@@ -123,37 +175,6 @@ part_type: Compact
 [zk: localhost:2181(CONNECTED) 42] ls /clickhouse/tables/01/insertDebug/block_numbers
 [1]
 ```
-
-**多写情景如何处理 block number 同步**
-考虑多写情景，如果客户端在两个 replica 上同时写某个 partition，我们需要保证 block number 在两个 replica 上的顺序性。该顺序性是通过 zk 的[sequential node](https://zookeeper.apache.org/doc/r3.4.10/zookeeperProgrammers.html#Sequence+Nodes+--+Unique+Naming)实现的。zk 中创建 znode 共有[四种模式](https://zookeeper.apache.org/doc/r3.2.2/api/org/apache/zookeeper/CreateMode.html)，我们这里需要关注的是`EPHEMERAL_SEQUENTIAL`：The znode will be deleted upon the client's disconnect, and its name will be appended with a monotonically increasing number.
-
-ReplicatedMergeTree 写入流程中，commitPart 的时候会创建一个 EmphemeralLockInZookeeper 对象，这个对象对应zk的两个节点，一个是代表 part 正在被写入的 /block_numbers/partitiond_id/block_xxxxx ，另一个是 /temp/abandonable_lock-xxxxx，前者引用后者。
-
-以我们写入的第一个 part 为例，partition_id = 1，由于是第一次在当前 partition 插入 znode，那么这个 block 就可以获得 number 0000000000，同样 temp 下也是第一次插入 znode，那么其唯一的 id 也是 0000000000
-
-<img alt="picture 1" src="../../images/fd7d7846e65030a93516b15c70dec358468f4af0a1467a09ab521d7a266bdedc.png" />  
-
-当我们处理完第一个 part，连接断开，partition 下的 `block_` 和 temp 下的 `abandonable_lock` 都会被自动删除，第二个 part 的 partition id 为 2，重复上述过程，我们可以得到
-
-<img alt="picture 2" src="../../images/19579eca222a612ebd53bccf43a501762105ee34095efaf67a30f276e5616c2d.png" />  
- 
-上述过程是在函数 EphemeralLockInZooKeeper 中完成的，返回的 lock 对象将会包含 `block_` 后跟随的 sequential number，然后该 number 将会被赋值给 part
-```c++
-lock = EphemeralLockInZooKeeper(
-            partition_path + "/block-", zookeeper_path + "/temp", *zookeeper, &deduplication_check_ops);
-
-...
-block_number = block_number_lock->getNumber();
-part->info.min_block = block_number;
-part->info.max_block = block_number;
-...
-```
-实际上只需要 block_ 节点就足够保证 block number 的顺序性了，不是很明白这里 abandonable_lock_ 的作用。（猜测是为了能够区分不同 partition 下正在被写入的 part）
-
-
-
-
-
 ### Follower 节点
 目前我们完成了在 initail 节点的 part 写入，现在需要完成将 initial 节点写入的 part 同步到 follower 节点的工作。
 
