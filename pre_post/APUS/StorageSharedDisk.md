@@ -1,3 +1,9 @@
+### 本地文件组织
+
+
+
+
+## 同步机制
 原生的Clickhouse依赖本地文件系统保存很多 part 状态信息，比如 DETACH PARTITION 的时候将目标 part 全部 move 到 `storage.relative_path/detached/` 下，通过 detached 目录来记录 DETACH 行为，并没有另一个集中的元数据文件来记录 part 的状态。
 
 StorageShareDiskMergeTree 依赖 manifest 来记录所有的行为，依赖 snapshot 来记录某个时间点 table 元数据的快照。所以如果让我们从头开始实现 StorageSharedDisk，就可以不再需要本地的目录组织结构了，所有的 part 状态都记录在 snapshot + manifest 中，part 与数据文件（共享文件系统上的文件/对象存储上的对象）的映射关系都以 protobuf 的消息格式持久化到 manifest 中，具体指 CHPartMetaPB。
@@ -5,7 +11,7 @@ StorageShareDiskMergeTree 依赖 manifest 来记录所有的行为，依赖 snap
 但是由于我们是在 Clickhouse 的基础上，通过继承 MergeTreeData，构造了 StorageShareDiskMergeTree，而 MergeTreeData 以及 IMergeTreeDataPart 的很多操作都是默认 part 被保存在某个 IDisk 指向的本地文件系统上，所以我们在 StorageMergeTree 实现时，也需要保留本地文件系统上 part 的目录。但是，这里保存本地文件系统的组织结构，只是为了兼容原有的 Clickhouse 代码逻辑，我们不依赖本地文件系统记录元信息。比如 ATTACH PARTITION 的时候，我们是从 CHTableManifestPB.detached_parts 中获取之前所有被 detach 过的 part，而不是通过本地文件系统的 detached 目录，哪怕 detached 目录下也有我们想要的信息。
 
 
-## 原子操作
+### 原子操作
 
 在并发编程的时候，我们提出了原子操作来实现不同进程/线程之间的同步。原子操作是提供一种机制，能够确保在进程 P1 访问某个临界资源（包括一切共享资源，内存、磁盘等）期间，该临界资源不会被其他进程访问。
 以内存操作为例，原子操作实现的原理是在进程 P1 执行原子操作 A 期间，将访问这段内存的 memory bus 加锁，确保即使发生了进程切换，或者其他核上的线程想要访问这段内存，这段内存中的数据对于进程 P1 始终是一致的。
@@ -23,4 +29,4 @@ manifest 本质是 snopshot + redo log。我们对 manifest 的操作可以分�
     以 ATTACH PARTITION 为例，当我们通过 manifest 更新自己的内存状态，并且添加 redo log 之后，我们就可以认为，在此时，执行 ATTACH 才会是正确的，能够保证不同副本在执行 redo log 后，内存与磁盘上状态一致，如果在添加 log 之前就操作磁盘，那么一旦添加 log 失败，我们之前对磁盘的操作可能就是错误的。
     后者为何可以在添加log之前就操作磁盘？是因为我们保证了，磁盘上的数据一定是正确的。比如对于 INSERT，我们在本地保存的 part 文件名为其 uuid，而不是 name。name 在冲突过程中是可能会被改变的，而 uuid 则永远不会变。
 
-## 冲突解决
+### 冲突解决
