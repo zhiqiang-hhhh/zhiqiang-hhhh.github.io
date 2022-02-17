@@ -365,3 +365,46 @@ for i = 0; i < array_max_size; ++i
         /// 
         
 ```
+
+---
+
+ColumnArray::filter
+```c++
+template <typename T, typename ResultOffsetsBuilder>
+void filterArraysImplGeneric(
+    const PaddedPODArray<T> & src_elems, const IColumn::Offsets & src_offsets, PaddedPODArray<T> & res_elems, IColumn::Offsets * res_offsets, const IColumn::Filter & filt, ssize_t result_size_hint)
+{
+    const size_t size = src_offsets.size();
+    if (size != filt.size())
+        throw Exception("Size of filter does not match size of column.", ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH);
+
+    ResultOffsetsBulder result_offsets_builder(res_offsets);
+
+    if (result_size_hint)
+    {
+        ...
+    }
+
+    const UInt8 * filt_pos = filt.data();
+    const auto * filt_end = filt_pos + size;
+
+    const auto * offsets_pos = src_offsets.data();
+    const auto * offsets_begin = offsets_pos;
+
+    const auto copy_array = [&] (const IColumn::Offset * offset_ptr)
+    {
+        /// 需要拷贝的 array 的起始位置
+        const auto arr_offset = offset_ptr == offsets_begin ? 0 : offset_ptr[-1];
+        const auto arr_size = *offset_ptr - arr_offset;
+
+        result_offsets_builder.insertOne(arr_size);
+
+        const auto elems_size_old = res_elems.size();
+        res_elems.resize(elems_size_old + arr_size);
+        memcpy(&res_elems[elems_size_old], &src_elems[arr_offset], arr_size * sizeof(T));
+    }
+
+    static constexpr size_t SIMD_BYTES = 64;
+    const auto * filt_and_aligned = filt_pos + size / SIMD_BYTES * SIMD_BYTES;
+}
+```
