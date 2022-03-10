@@ -365,3 +365,5 @@ private:
     MultiVersionStorageMetadataPtr metadata;
 }
 ```
+
+## MergeMutate
