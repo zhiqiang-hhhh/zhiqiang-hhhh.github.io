@@ -148,141 +148,178 @@ bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assign
     }
 }
 ```
-
-### ThreadPool, Thread, Executor, Task
 ```c++
-class Context {
+void BackgroundJobsAssignee::scheduleMergeMutateTask(ExecutableTaskPtr merge_task)
+{
+    bool res = getContext()->getMergeMutateExecutor()->trySchedule(merge_task);
+    res ? trigger() : postpone();
+}
+```
+在前面的代码中，出现了两种创建 task 的方法：
+1. `getContext()->getSchedulePool()->createTask()`;
+2. `getContext()->getMergeMutateExecutor()->trySchedule()`
+
+
+
+下面先分析一下Clickhouse中的任务调度机制
+### ThreadPool, Thread, Executor, Task
+
+Context 全局共享。
+
+```plantuml
+class Context
+{
     ...
-    mutable std::optional<BackgroundSchedulePool> schedule_pool;
-    mutable std::optional<BackgroundSchedulePool> distributed_schedule_pool;
+    - schedule_pool : BackgroundSchedulePool
+    - distributed_schedule_pool : BackgroundSchedulePool
     ...
-    MergeMutateBackgroundExecutorPtr merge_mutate_executor;
-    OrdinaryBackgroundExecutorPtr moves_executor;
-    OrdinaryBackgroundExecutorPtr fetch_executor;
-    OrdinaryBackgroundExecutorPtr common_executor;
+    - merge_mutate_executor : MergeMutateBackgroundExecutorPtr
+    - moves_executor : OrdinaryBackgroundExecutorPtr 
+    - fetch_executor : OrdinaryBackgroundExecutorPtr
+    - common_executor : OrdinaryBackgroundExecutorPtr 
     ...    
 }
 ```
-ThreadPool 实现如下，包含一组真正的线程，轮番消费 priority_queue 中的 job。
-```c++
-ThreadPoolImpl
+BackgroundSchedulePool: 在某个时间点调度执行functions。基本上，所有的 tasks 都会被添加到一个 queue 中，然后被 worker threads 处理。典型的使用方式：在 BackgroundSchedulePool 中创建一个 task，当你确实需要执行该 task 时，再调用该 task 的 schedule 方法。
+
+```plantuml
+class BackgroundSchedulePool
 {
-public:
-    using Job = std::function<void()>;
+    - size : size_t
+    - threads : Threads
+    - queue : Queue
     ...
-private:
-    mutable std::mutex mutex;
-    std::condition_variable job_finished;
-    std::condition_variable new_job_or_shutdown;
-
-    size_t max_threads;
-    size_t max_free_threads;
-    size_t queue_size;
-
-    size_t scheduled_jobs = 0;
-    bool shutdown = false;
-
-    struct JobWithPriority
-    {
-        Job job;
-        int priority;
-
-        JobWithPriority(Job job_, int priority_)
-            : job(job_), priority(priority_) {}
-
-        bool operator< (const JobWithPriority & rhs) const
-        {
-            return priority < rhs.priority;
-        }
-    };
-
-    boost::heap::priority_queue<JobWithPriority> jobs;
-    std::list<Thread> threads;
-    std::exception_ptr first_exception;
-
-    template <typename ReturnType>
-    ReturnType scheduleImpl(Job job, int priority, std::optional<uint64_t> wait_microseconds);
-
-    void worker(typename std::list<Thread>::iterator thread_it);
-
-    void finalize();
+    + createTask(log_name, function) : BackgroundSchedulePoolTaskHolder
 }
-```
-Task 是 Clickhouse 自己写的 coroutine，所有的后台操作都可以通过实现 `IExecutableTask` 来创建一个 task。每个 Task 都是 a sequence of steps, 较重的 task 需要更多的 steps，Executor 每次只调度 task 执行一个 step，这样可以实现不同 task 穿插执行。
 
+BackgroundSchedulePool *-- BackgroundSchedulePoolTaskHolder
 
-
-
-
-Executor 是将 ThreadPool 与 Task 封装在一起构成的更加“高级”类。
-```c++
-template <class Queue>
-class MergeTreeBackgroundExecutor
+class BackgroundSchedulePoolTaskHolder
 {
-public:
-    MergeTreebackgroundExecutor(
-        String name_,
-        size_t threads_count_,
-        size_t max_tasks_count_,
-        CurrentMetrics::Metric metric_)
-        : name(name_)
-        , threads_count(thread_count_)
-        , max_tasks_cound(max_tasks_count_),
-        , metric(metric_)
-    {
-        ...
-        if (max_tasks_count == 0)
-            throw Exception(ErrorCodes::LOGICAL_ERROR, "Task count for MergeTreeBackgroundExecutor must not be zero");
-
-        pending.setCapacity(max_tasks_count);
-        active.set_capacity(max_tasks_count);
-
-        pool.setMaxThreads(std::max(1UL, threads_count));
-        pool.setMaxFreeThreads(std::max(1UL, threads_count));
-        pool.setQueueSize(std::max(1UL, threads_count));
-
-        for (size_t number = 0; number < threads_count; ++number)
-            pool.scheduleOrThrowOnError([this] { threadFunction(); });
-    }
-    ...
-    bool trySchedule(ExecutableTaskPtr task);
-    ...
-    void wait();
-
-private:
-    String name;
-    size_t threads_count;
-    size_t max_tasks_cound;
-    CurrentMetrics::Metric metric;
+    - task_info : BackgroundSchedulePoolTaskInfo
 }
-```
 
+BackgroundSchedulePoolTaskHolder *-- BackgroundSchedulePoolTaskInfo
 
-
-
-```c++
-class MergePlainMergeTreeTask : public IExecutableTask
+class BackgroundSchedulePoolTaskInfo
 {
-public:
-
-    bool executeStep() override;
-    void onCompleted() override;
-    StorageID getStorageID() override;
-    UInt64 getPriority() override { return priority; }
-
-private:
-    void prepare();
-    void finish();
-
-    enum class State
-    {
-        NEED_PREPARE,
-        NEED_EXECUTE,
-        NEED_FINISH,
-
-        SUCCESS
-    };
-
-    State state{State::NEED_PREPARE};
+    + schedule() : bool
+    + scheduleAfter(size_t) : bool
+    + deactivate() : void
+    + activate() : void
+    + activateAndSchedule() : bool
+    - execute() : void
+    - pool : BackgroundSchedulePool &
+    - function : BackgroundSchedulePool::TaskFunc
+    ...
 }
+
+BackgroundSchedulePoolTaskInfo *-- BackgroundSchedulePool
 ```
+我们称 BackgroundSchedulePool 能够执行的 task 为 background task，还有一种 task 类型是 executable task，这类 task 由各种 Executor 执行。
+从 MergeTree 的 Merge 过程我们可以简单对这两类 task 进行区分，background task 的任务是决定如何进行 merge，executable task 的任务是真正进行 merge 动作。
+
+Executor
+
+```plantuml
+@startuml
+
+interface IExecutableTask {
+    + {abstract} executeStep() : bool
+    + {abstract} onCompleted() : void
+    + {abstract} getStorageID() : StorageID
+    + {abstract} getPriority() : UInt64
+    + {abstract} \~IExecutableTask()
+}
+
+MergeTreeBackgroundExecutor *-- IExecutableTask
+
+class MergeTreeBackgroundExecutor {
+    - name : String
+    - threads_count : size_t
+    - max_tasks_count : size_t
+    - metric : CurrentMetrics::Metric
+    - pending : Queue
+    - active : circular_buffer<TaskRuntimeDataPtr>
+    - mutex : mutex
+    - has_tasks : condition_variable
+    - shutdonw : atomic_bool
+    - pool : ThreadPool
+
+    + trySchedule(ExecutableTaskPtr) : bool
+    + removeTasksCorrespondingToStorage(StorageID id) : void
+    + wait() : void
+}
+
+IExecutableTask <|-- MergePlainMergeTreeTask
+
+class MergePlainMergeTreeTask {
+    - storage : StorageMergeTree
+    - metadata_snapshot : StorageMetadataPtr
+    - deduplicate : bool
+    - deduplicate_by_columns : Names
+    - merge_mutate_entry : shared_ptr<MergeMutateSelectedEntry>
+    - table_lock_holder : TableLockHolder
+    - future_part : FutureMergedMutatedPartPtr
+    - new_part : MergeTreeData::MutableDataPartPtr
+    - merge_list_entry : unique_ptr<MergeListEntry>
+    - merge_task : MergeTaskPtr
+}
+
+MergeTreeBackgroundExecutor *-- ThreadPool
+
+class ThreadPool
+{
+    - max_threads : size_t
+    - max_free_threads : size_t
+    - queue_size : size_t
+    - scheduled_jobs : size_t
+    - threads : list<Thread>
+    - jobs : JobWithPriority
+    + scheduleOrThrowOnError(Job, priority) : void
+    + trySchedule(Job, wait_microseconds) : bool
+    + scheduleOrThrow(Job, priority, wait_microseconds) : void
+    + wait() : void
+}
+
+
+@enduml
+```
+
+Executable task 是 Clickhouse 自己写的 coroutine，所有的后台操作都可以通过实现 `IExecutableTask` 来创建一个 task。每个 Task 都是 a sequence of steps, 较重的 task 需要更多的 steps，Executor 每次只调度 task 执行一个 step，这样可以实现不同 task 穿插执行。
+对于 MergePlainMergeTreeTask 来说，其执行一共有四个阶段（stage）：
+
+1. NEED_PREPARE
+2. NEED_EXECUTE
+3. NEED_FINISH
+4. SUCCESS
+
+```plantuml
+@startuml
+NEED_PREPARE -> NEED_EXECUTE : prepare()
+NEED_EXECUTE -> NEED_EXECUTE : merge_task->execute()
+NEED_EXECUTE -> NEED_EXECUTE : merge_task->execute()
+NEED_EXECUTE -> NEED_EXECUTE : merge_task->execute()
+NEED_EXECUTE -> NEED_FINISH : merge_task->execute()
+NEED_FINISH -> SUCCESS : finish()
+@enduml
+```
+NEED_PREPATE 阶段的主要任务是创建一个 MergeTask 对象。
+NEED_EXECUTE 阶段每次都会调用 merge_task 的 execute 方法， 当该方法返回 true 时，Stage 不会更替，下次调度到当前 MergePlainMergeTreeTask 时还会执行 execute 方法，当该方法返回 false 时，表示 task 完成，需要进入下一个 stage。
+
+对于 MergeTask 来说，其执行包含如下的 step，对应代码中的 MergeTask::IStage，**每个 step 还包含 subtask**，不同 step
+包含的 subtask 数量不同，每次调用 `merge_task->execute()` 都会使 merge_task 在每个step的subtask间切换
+```plantuml
+@startuml
+ExecuteAndFinalizeHorizontalPart -> ExecuteAndFinalizeHorizontalPart : prepare
+ExecuteAndFinalizeHorizontalPart -> VerticalMergeStage : executeImpl
+VerticalMergeStage -> VerticalMergeStage : prepareVerticalMergeForAllColumns
+VerticalMergeStage -> VerticalMergeStage : executeVerticalMergeForAllColumns
+VerticalMergeStage -> MergeProjectionsStage : finalizeVerticalMergeForAllColumns
+MergeProjectionsStage -> MergeProjectionsStage : mergeMinMaxIndexAndPrepareProjections
+MergeProjectionsStage -> MergeProjectionsStage : executeProjections
+MergeProjectionsStage -> End : finalizeProjectionsAndWholeMerge
+@enduml
+```
+在原先的设计中，一次Merge交给一个线程全程执行，现在将线程细分到coroutine之后，需要额外保存每个coroutine的执行上下文，确保coroutine切换回来再次执行的时候能够继续上次的状态。MergeTask::IStageRuntimeContext 用于完成该目标。
+
