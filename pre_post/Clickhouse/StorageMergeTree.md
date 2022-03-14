@@ -367,3 +367,25 @@ private:
 ```
 
 ## MergeMutate
+### selectPartsToMerge
+```plantuml
+@startuml
+class CurrentlyMergingPartsTagger {
+    - future_part : FutureMergedMutatedPart
+    - reserved_space : IReservation
+    - storage : StorageMergeTree &
+    - tagger : CurrentlySubmergingEmergingTagger
+}
+
+CurrentlyMergingPartsTagger *-- CurrentlySubmergingEmergingTagger
+
+class CurrentlySubmergingEmergingTagger {
+    - storage : MergeTreeData &
+    - emerging_part_name : String
+    - submerging_parts : DataPartsVector
+}
+
+
+@enduml
+```
+

@@ -1,3 +1,5 @@
+[TOC]
+## Merge
 MergeTreeData 所处的位置：
 
 ```plantuml
@@ -180,7 +182,7 @@ class Context
     ...    
 }
 ```
-BackgroundSchedulePool: 在某个时间点调度执行functions。基本上，所有的 tasks 都会被添加到一个 queue 中，然后被 worker threads 处理。典型的使用方式：在 BackgroundSchedulePool 中创建一个 task，当你确实需要执行该 task 时，再调用该 task 的 schedule 方法。
+BackgroundSchedulePool: 在某个时间点调度执行functions。基本上，所有的 tasks 都会被添加到一个 queue 中，然后被 worker threads 处理。典型的使用方式：在 BackgroundSchedulePool 中创建一个 task，当你确实需要执行该 task 时，再调用该 task 的 schedule 方法。BackgroundSchedulePool 执行的典型函数是 scheduleDataProcessingJob
 
 ```plantuml
 class BackgroundSchedulePool
@@ -216,10 +218,7 @@ class BackgroundSchedulePoolTaskInfo
 
 BackgroundSchedulePoolTaskInfo *-- BackgroundSchedulePool
 ```
-我们称 BackgroundSchedulePool 能够执行的 task 为 background task，还有一种 task 类型是 executable task，这类 task 由各种 Executor 执行。
-从 MergeTree 的 Merge 过程我们可以简单对这两类 task 进行区分，background task 的任务是决定如何进行 merge，executable task 的任务是真正进行 merge 动作。
-
-Executor
+为了方便理解进行区别，我们称 BackgroundSchedulePool 能够执行的 task 为 background job，还有一种 task 类型是 executable task，这类 task 由各种 Executor 执行。
 
 ```plantuml
 @startuml
@@ -254,16 +253,12 @@ class MergeTreeBackgroundExecutor {
 IExecutableTask <|-- MergePlainMergeTreeTask
 
 class MergePlainMergeTreeTask {
-    - storage : StorageMergeTree
-    - metadata_snapshot : StorageMetadataPtr
-    - deduplicate : bool
-    - deduplicate_by_columns : Names
-    - merge_mutate_entry : shared_ptr<MergeMutateSelectedEntry>
-    - table_lock_holder : TableLockHolder
-    - future_part : FutureMergedMutatedPartPtr
-    - new_part : MergeTreeData::MutableDataPartPtr
-    - merge_list_entry : unique_ptr<MergeListEntry>
-    - merge_task : MergeTaskPtr
+    - storage : StorageMergeTree &
+    - metadata_snapshot : StorageMetadata
+    - future_part : FutureMergedMutetedPart
+    + executeStep() : bool
+    + onCompleted() : bool
+    + getStorageID() : StorageID 
 }
 
 MergeTreeBackgroundExecutor *-- ThreadPool
@@ -287,6 +282,90 @@ class ThreadPool
 ```
 
 Executable task 是 Clickhouse 自己写的 coroutine，所有的后台操作都可以通过实现 `IExecutableTask` 来创建一个 task。每个 Task 都是 a sequence of steps, 较重的 task 需要更多的 steps，Executor 每次只调度 task 执行一个 step，这样可以实现不同 task 穿插执行。
+
+在原先的设计中，一次Merge交给一个线程全程执行，现在将线程细分到coroutine之后，需要额外保存每个coroutine的执行上下文，确保coroutine切换回来再次执行的时候能够继续上次的状态。MergeTask::IStageRuntimeContext 用于完成该目标。
+
+
+
+#### Merge
+
+每个MergeTree对象在其start方法中都会为自己在 BackgroundSchedulePool 中创建一个 Job，该 Job 被调度时执行的函数是 StorageMergeTree::scheduleDataProcessingJob。 
+
+```c++
+bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assignee)
+{
+    ...
+    merge_entry = selectPartsToMerge(metadata_snapshot, false, {}, false, nullptr, share_lock, lock);
+    if (!merge_entry)
+        mutate_entry = selectPartsToMutate(metadata_snapshot, nullptr, share_lock, lock, were_some_mutations_skipped);
+    ...
+    if (merge_entry)
+    {
+        auto task = std::make_shared<MergePlainMergeTreeTask>(*this, metadata_snapshot, false, Names{}, merge_entry, share_lock, common_assignee_trigger);
+        assignee.scheduleMergeMutateTask(task);
+        return true;
+    }
+    ...
+}
+```
+`StorageMergeTree::selectPartsToMerge`函数返回一个 MergeMutateSelectedEntry 对象，记录本次 merge 需要将哪些 part 合并成新的 part。然后创建一个 MergePlainMergeTreeTask 对象，将这个 task 交给 MergeMutateExecutor 执行。
+
+```plantuml
+class MergePlainMergeTreeTask {
+    - storage : StorageMergeTree &
+    - metadata_snapshot : StorageMetadata
+    - future_part : FutureMergedMutetedPart
+    + executeStep() : bool
+    + onCompleted() : bool
+    + getStorageID() : StorageID 
+}
+
+MergePlainMergeTreeTask *-- MergeMutateSelectedEntry
+
+
+class MergeMutateSelectedEntry {
+    + future_part : FutureMergedMutatedPart
+    + tagger : CurrentlyMergingPartsTagger
+    + commands : MutationCommands
+}
+
+MergeMutateSelectedEntry *-- FutureMergedMutatedPart
+MergeMutateSelectedEntry *-- CurrentlyMergingPartsTagger
+MergeMutateSelectedEntry *-- MutationCommand
+
+class FutureMergedMutatedPart {
+    + name : String
+    + uuid : UUID
+    + path : String
+    + type : MergeTreeDataPartType
+    + part_info : MergeTreePartInfo
+    + parts : DataPartsVector
+    + merge_type : MergeType
+    + getPartition() : MergeTreePartition
+    + assign(DataPartsVector) : void
+    + assign(DataPartsVector, future_part_type) : void
+    + updatePath(MergeTreeData &, IReservation) : void   
+}
+
+class CurrentlyMergingPartsTagger {
+    + future_part : FutureMergedMutatedPart
+    + reserved_space : Reservation
+    + storage : StorageMergeTree &
+    + tagger : CurrentlySubmergingEmergingTagger
+}
+
+class MutationCommand {
+    + type : Type
+    + predicate : ASTPtr
+    + column_to_update_expression : map<String, ASTPtr>
+    + index_name : String
+    + projection_name : String
+    + partition : ASTPtr
+    + column_name : String
+    + data_type : DataType
+    ...
+}
+```
 对于 MergePlainMergeTreeTask 来说，其执行一共有四个阶段（stage）：
 
 1. NEED_PREPARE
@@ -307,7 +386,7 @@ NEED_FINISH -> SUCCESS : finish()
 NEED_PREPATE 阶段的主要任务是创建一个 MergeTask 对象。
 NEED_EXECUTE 阶段每次都会调用 merge_task 的 execute 方法， 当该方法返回 true 时，Stage 不会更替，下次调度到当前 MergePlainMergeTreeTask 时还会执行 execute 方法，当该方法返回 false 时，表示 task 完成，需要进入下一个 stage。
 
-对于 MergeTask 来说，其执行包含如下的 step，对应代码中的 MergeTask::IStage，**每个 step 还包含 subtask**，不同 step
+对于 MergeTask 来说，其execute函数执行路径包含如下的 step，对应代码中的 MergeTask::IStage，**每个 step 还包含 subtask**，不同 step
 包含的 subtask 数量不同，每次调用 `merge_task->execute()` 都会使 merge_task 在每个step的subtask间切换
 ```plantuml
 @startuml
@@ -321,5 +400,64 @@ MergeProjectionsStage -> MergeProjectionsStage : executeProjections
 MergeProjectionsStage -> End : finalizeProjectionsAndWholeMerge
 @enduml
 ```
-在原先的设计中，一次Merge交给一个线程全程执行，现在将线程细分到coroutine之后，需要额外保存每个coroutine的执行上下文，确保coroutine切换回来再次执行的时候能够继续上次的状态。MergeTask::IStageRuntimeContext 用于完成该目标。
 
+
+### VolatilePart
+在创建 MergeTask 的时候
+
+### Part Description
+```plantuml
+class IMergeTreeDataPart {
+    + {abstract} getReader(...) : MergeTreeRreader
+    + {abstract} getWriter(...) : MergeTreeWriter
+    + {abstract} isStoredOnDisk() : bool
+    + stoarge : MergeTreeData &
+    + info : MergeTreePartInfo
+    + volume : Volumn
+    + relative_path : String
+    # columns : NamesAndTypesList
+    ...
+}
+
+IMergeTreeDataPart *-- MergeTreeDataWriter
+
+class MergeTreeDataWriter {
+     + {static} splitBlockIntoParts(...) :  BlocksWithPartition
+     + writeTempPart(...) : MutableDataPart
+     + {static} mergeBlock(...) : Block
+     ...
+     - data : MergeTreeData &
+}
+```
+在 `MergeTreeDataWriter::writeTempPart`中，会根据 storage policy 来确定 temp part 应该写入哪个磁盘
+```c++
+ReservationPtr reservation = data.reserveSpacePreferringTTLRules(
+    metadata_snapshot, expected_size, move_ttl_infos, time(nullptr), 0, true);
+VolumePtr volume = data.getStoragePolicy()->getVolume(0);
+
+auto new_data_part = data.createPart(
+    part_name,
+    data.choosePartType(expected_size, block.rows()),
+    new_part_info,
+    createVolumeFromReservation(reservation, volume),
+    TMP_PREFIX + part_name);
+
+if (data.storage_settings.get()->assign_part_uuids)
+    new_data_part->uuid = UUIDHelpers::generateV4();
+```
+
+```plantuml
+class IStoragePolicy {
+
+}
+
+class IVolumn
+
+
+class IReservation {
+    + {abstract} getSize() : UInt64
+    + {abstract} getDisk(size_t) : DiskPtr
+    + {abstract} getDisks() : Disks
+    + {abstract} update(new_size : void
+}
+```
