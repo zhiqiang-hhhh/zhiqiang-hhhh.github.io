@@ -1,170 +1,7 @@
 [TOC]
-## Merge
-MergeTreeData 所处的位置：
-
-```plantuml
-abstract class IStorage
-
-IStorage <-- MergeTreeData
-
-abstract class MergeTreeData
-
-MergeTreeData <-- StorageMergeTree
-MergeTreeData <-- StorageReplicatedMergeTree
-MergeTreeData <-- StorageShareDiskMergeTree
-```
-
-数据成员（Merge相关）：
-```plantuml
-abstract class MergeTreeData {
-    - relative_data_path : String
-    - data_parts_mutex : mutex
-    - data_parts_indexes : DataPartsIndexes
-    - background_operations_assignee : BackgroundJobsAssignee
-    ...
-}
-
-MergeTreeData *-- BackgroundJobsAssignee
-
-class BackgroundJobsAssignee {
-    + BackgroundJobsAssignee(MergeTreeData&, Type, ContexPtr)
-    - data : MergeTreeData&
-    - holder : BackgroundSchedulePool::TaskHolder
-    + start() : void
-    + trigger() : void
-    + postpone() : void
-    + finish() : void
-    - threadFunc() : void
-}
-```
-
-MergeTreeData 的 contructor 中构造 BackgroundJobsAssignee 对象。
-
-后台任务的启动流程：
-```c++
-BackgroundJobsAssignee(MergeTreeData & data_, Type type, ContextPtr global_context_)
-    : ..., data(data_), ... {}
-
-MergeTreeData::MergeTreeData(
-    const StorageID & table_id_,
-    ...)
-    : ...
-    , ...
-    , background_operations_assignee(*this, BackgroundJobsAssignee::Type::DataProcessing, getContext())
-    ...)
-{
-    ...
-}
-
-StorageMergeTree(
-    const StorageID & table_id_,
-    ...
-    ) : MergeTreeData(
-        table_id_,
-        ...
-    )
-)
-
-StorageMergeTree::startup()
-{
-    ...
-    background_operations_assignee.start();
-    ...
-}
-
-void BackgroundJobsAssignee::start()
-{
-    std::lock_guard lock(holder_mutex);
-    if (!holder)
-        holder = getContext()->getSchedulePool().createTask("BackgroundJobsAssignee:" + toString(type), [this]{ threadFunc(); });
-
-    holder->activateAndSchedule();
-}
-```
-也就是说，在StorageMergeTree 对象的 start 方法中，在 schedule pool 创建一个 task，该 task 执行的是`BackgroundJobsAssignee::threadFunc()` 方法，
-```c++
-void BackgroundJobsAssignee::threadFunc()
-{
-    try
-    {
-        bool succeed = false;
-        switch (type)
-        {
-            case Type::DataProcessing:
-                succeed = data.scheduleDataProcessingJob(*this);
-                break;
-            case Type::Moving:
-                succeed = data.scheduleDataMovingJob(*this);
-                break;
-        }
-
-        if (!succeed)
-            postpone();
-    }
-    catch (...) /// Catch any exception to avoid thread termination.
-    {
-        tryLogCurrentException(__PRETTY_FUNCTION__);
-        postpone();
-    }
-}
-```
-最终执行的是`StorageMergeTree::scheduleDataProcessingJob(BackgroundJobAssignee&)`。
-
-```c++
-bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assignee)
-{
-    ...
-    auto metadata_snapshot = getInMemoryMetadataPtr();
-    std::shared_ptr<MergeMutateSelectedEntry> merge_entry, mutate_entry;
-
-    auto share_lock = lockForShare(RWLockImpl::NO_QUERY, getSettings()->lock_acquire_timeout_for_background_operations);
-
-    ...
-
-    bool has_mutations = false;
-    {
-        std::unique_lock lock(currently_processing_in_background_mutex);
-        if (merger_mutator.merges_blocker.isCancelled())
-            return false;
-
-        merge_entry = selectPartsToMerge(metadata_snapshot, false, {}, false, nullptr, share_lock, lock);
-        if (!merge_entry)
-            mutate_entry = selectPartsToMutate(metadata_snapshot, nullptr, share_lock, lock, were_some_mutations_skipped);
-
-        has_mutations = !current_mutations_by_version.empty();
-    }
-
-    if ((!mutate_entry && has_mutations) || were_some_mutations_skipped)
-    {
-        /// Notify in case of errors or if some mutation was skipped (because it has no effect on the part).
-        /// TODO @azat: we can also spot some selection errors when `mutate_entry` is true.
-        std::lock_guard lock(mutation_wait_mutex);
-        mutation_wait_event.notify_all();
-    }
-
-    if (merge_entry)
-    {
-        auto task = std::make_shared<MergePlainMergeTreeTask>(*this, metadata_snapshot, false, Names{}, merge_entry, share_lock, common_assignee_trigger);
-        assignee.scheduleMergeMutateTask(task);
-        return true;
-    }
-}
-```
-```c++
-void BackgroundJobsAssignee::scheduleMergeMutateTask(ExecutableTaskPtr merge_task)
-{
-    bool res = getContext()->getMergeMutateExecutor()->trySchedule(merge_task);
-    res ? trigger() : postpone();
-}
-```
-在前面的代码中，出现了两种创建 task 的方法：
-1. `getContext()->getSchedulePool()->createTask()`;
-2. `getContext()->getMergeMutateExecutor()->trySchedule()`
 
 
-
-下面先分析一下Clickhouse中的任务调度机制
-### ThreadPool, Thread, Executor, Task
+## ThreadPool, Thread, Executor, Task
 
 Context 全局共享。
 
@@ -182,7 +19,7 @@ class Context
     ...    
 }
 ```
-BackgroundSchedulePool: 在某个时间点调度执行functions。基本上，所有的 tasks 都会被添加到一个 queue 中，然后被 worker threads 处理。典型的使用方式：在 BackgroundSchedulePool 中创建一个 task，当你确实需要执行该 task 时，再调用该 task 的 schedule 方法。BackgroundSchedulePool 执行的典型函数是 scheduleDataProcessingJob
+BackgroundSchedulePool: 在某个时间点调度执行 functions。基本上，所有的 tasks 都会被添加到一个 queue 中，然后被 worker threads 处理。典型的使用方式：在 BackgroundSchedulePool 中创建一个 task，当你确实需要执行该 task 时，再调用该 task 的 schedule 方法。
 
 ```plantuml
 class BackgroundSchedulePool
@@ -218,7 +55,7 @@ class BackgroundSchedulePoolTaskInfo
 
 BackgroundSchedulePoolTaskInfo *-- BackgroundSchedulePool
 ```
-为了方便理解进行区别，我们称 BackgroundSchedulePool 能够执行的 task 为 background job，还有一种 task 类型是 executable task，这类 task 由各种 Executor 执行。
+为了进行区别，我们称 BackgroundSchedulePool 能够执行的 task 为 background job，还有一种 task 类型是 executable task，这类 task 由各种 Executor 执行。
 
 ```plantuml
 @startuml
@@ -285,11 +122,233 @@ Executable task 是 Clickhouse 自己写的 coroutine，所有的后台操作都
 
 在原先的设计中，一次Merge交给一个线程全程执行，现在将线程细分到coroutine之后，需要额外保存每个coroutine的执行上下文，确保coroutine切换回来再次执行的时候能够继续上次的状态。MergeTask::IStageRuntimeContext 用于完成该目标。
 
+## WriteTempPart
+```c++
+SinkToStoragePtr
+StorageMergeTree::write(const ASTPtr & /*query*/, const StorageMetadataPtr & metadata_snapshot, ContextPtr local_context)
+{
+    const auto & settings = local_context->getSettingsRef();
+    return std::make_shared<MergeTreeSink>(
+        *this, metadata_snapshot, settings.max_partitions_per_insert_block, local_context);
+}
+```
 
 
-#### Merge
+```c++
+MergeTreeDataWriter::TemporaryPart MergeTreeDataWriter::writeTempPart(
+    BlockWithPartition & block_with_partition, const StorageMetadataPtr & metadata_snapshot, ContextPtr context)
+{
+    auto new_data_part = data.createPart(
+        part_name,
+        data.choosePartType(expected_size, block.rows()),
+        new_part_info,
+        createVolumeFromReservation(reservation, volume),
+        TMP_PREFIX + part_name);
+    ...
+    if (new_data_part->isStoredOnDisk())
+    {
+        ...
+        const auto disk = new_data_part->volume->getDisk();
+        disk->createDirectories(full_path);
+        ...
+    }
+    ...
+    auto finalizer = out->finalizePartAsync(new_data_part, data_settings->fsync_after_insert);
+    ...
+}
 
-每个MergeTree对象在其start方法中都会为自己在 BackgroundSchedulePool 中创建一个 Job，该 Job 被调度时执行的函数是 StorageMergeTree::scheduleDataProcessingJob。 
+```
+
+## Merge
+MergeTreeData 所处的位置：
+
+```plantuml
+abstract class IStorage
+
+IStorage <-- MergeTreeData
+
+abstract class MergeTreeData
+
+MergeTreeData <-- StorageMergeTree
+MergeTreeData <-- StorageReplicatedMergeTree
+MergeTreeData <-- StorageShareDiskMergeTree
+```
+
+数据成员（Merge相关）：
+```plantuml
+abstract class MergeTreeData {
+    - relative_data_path : String
+    - data_parts_mutex : mutex
+    - data_parts_indexes : DataPartsIndexes
+    - background_operations_assignee : BackgroundJobsAssignee
+    ...
+}
+
+MergeTreeData *-- BackgroundJobsAssignee
+
+class BackgroundJobsAssignee {
+    + BackgroundJobsAssignee(MergeTreeData&, Type, ContexPtr)
+    - data : MergeTreeData&
+    - holder : BackgroundSchedulePool::TaskHolder
+    + start() : void
+    + trigger() : void
+    + postpone() : void
+    + finish() : void
+    - threadFunc() : void
+}
+```
+
+MergeTreeData 的 contructor 中构造 BackgroundJobsAssignee 对象。
+
+在 MergeTree 对象启动时，会创建相关的 background job，相关的代码如下：
+```c++
+BackgroundJobsAssignee(MergeTreeData & data_, Type type, ContextPtr global_context_)
+    : ..., data(data_), ... {}
+
+MergeTreeData::MergeTreeData(
+    const StorageID & table_id_,
+    ...)
+    : ...
+    , ...
+    , background_operations_assignee(*this, BackgroundJobsAssignee::Type::DataProcessing, getContext())
+    ...)
+{
+    ...
+}
+
+StorageMergeTree(
+    const StorageID & table_id_,
+    ...
+    ) : MergeTreeData(
+        table_id_,
+        ...
+    )
+)
+
+StorageMergeTree::startup()
+{
+    ...
+    background_operations_assignee.start();
+    ...
+}
+
+void BackgroundJobsAssignee::start()
+{
+    std::lock_guard lock(holder_mutex);
+    if (!holder)
+        holder = getContext()->getSchedulePool().createTask("BackgroundJobsAssignee:" + toString(type), [this]{ threadFunc(); });
+
+    holder->activateAndSchedule();
+}
+```
+也就是说，StorageMergeTree 对象的 start 方法会在 schedule pool 创建一个 job，该 job 执行的是`BackgroundJobsAssignee::threadFunc()` 方法，
+```c++
+void BackgroundJobsAssignee::threadFunc()
+{
+    try
+    {
+        bool succeed = false;
+        switch (type)
+        {
+            case Type::DataProcessing:
+                succeed = data.scheduleDataProcessingJob(*this);
+                break;
+            case Type::Moving:
+                succeed = data.scheduleDataMovingJob(*this);
+                break;
+        }
+
+        if (!succeed)
+            postpone();
+    }
+    catch (...) /// Catch any exception to avoid thread termination.
+    {
+        tryLogCurrentException(__PRETTY_FUNCTION__);
+        postpone();
+    }
+}
+```
+对于 merge&mutate，最终执行的是`StorageMergeTree::scheduleDataProcessingJob(BackgroundJobAssignee&)`。
+
+```c++
+bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assignee)
+{
+    ...
+    auto metadata_snapshot = getInMemoryMetadataPtr();
+    std::shared_ptr<MergeMutateSelectedEntry> merge_entry, mutate_entry;
+
+    auto share_lock = lockForShare(RWLockImpl::NO_QUERY, getSettings()->lock_acquire_timeout_for_background_operations);
+
+    ...
+
+    bool has_mutations = false;
+    {
+        std::unique_lock lock(currently_processing_in_background_mutex);
+        if (merger_mutator.merges_blocker.isCancelled())
+            return false;
+
+        merge_entry = selectPartsToMerge(metadata_snapshot, false, {}, false, nullptr, share_lock, lock);
+        if (!merge_entry)
+            mutate_entry = selectPartsToMutate(metadata_snapshot, nullptr, share_lock, lock, were_some_mutations_skipped);
+
+        has_mutations = !current_mutations_by_version.empty();
+    }
+
+    if ((!mutate_entry && has_mutations) || were_some_mutations_skipped)
+    {
+        /// Notify in case of errors or if some mutation was skipped (because it has no effect on the part).
+        /// TODO @azat: we can also spot some selection errors when `mutate_entry` is true.
+        std::lock_guard lock(mutation_wait_mutex);
+        mutation_wait_event.notify_all();
+    }
+
+    if (merge_entry)
+    {
+        auto task = std::make_shared<MergePlainMergeTreeTask>(*this, metadata_snapshot, false, Names{}, merge_entry, share_lock, common_assignee_trigger);
+        assignee.scheduleMergeMutateTask(task);
+        return true;
+    }
+}
+
+void BackgroundJobsAssignee::scheduleMergeMutateTask(ExecutableTaskPtr merge_task)
+{
+    bool res = getContext()->getMergeMutateExecutor()->trySchedule(merge_task);
+    res ? trigger() : postpone();
+}
+```
+在前面的代码中，出现了两种创建 task 的方法：
+1. `getContext()->getSchedulePool()->createTask()`;
+2. `getContext()->getMergeMutateExecutor()->trySchedule()`
+
+其中第 1 种是在 BackgroundSchedulePool 中创建 BackgroundJob，该 Job 被调度时执行的函数是 `StorageMergeTree::scheduleDataProcessingJob`。该函数运行时决定要对哪些 part 进行 merge，并且通过方法 2 在 MergeMutateBackgroundExecutor 中创建 MergeTask，由 MergeTask 完成具体的 merge 操作。
+
+
+### selectPartsToMerge
+```plantuml
+class MergeMutateSelectedEntry {
+    - future_part : FutureMergedMutatedPart
+    - tagger : CurrentlyMergeingPartsTagger
+    - command : MutationCommands
+}
+
+MergeMutateSelectedEntry *-- FutureMergedMutatedPart
+MergeMutateSelectedEntry *-- CurrentlyMergeingPartsTagger
+MergeMutateSelectedEntry *-- MutationCommands
+
+class FutureMergedMutatedPart {
+    - name : String
+    - uuid : UUID
+    - path : String
+    - type : MergeTreeDataPartType
+    - part_info : MergeTreePartInfo
+    - parts : DataPartsVector
+    - merge_type : MergeType
+    + assign(DataPartsVector) : void
+    + assign(DataPartsVector, future_part_type) : void
+    + updatePath(MergeTreeData, IReservation) : void
+}
+```
+### MergeJob
 
 ```c++
 bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assignee)
@@ -309,6 +368,7 @@ bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assign
 }
 ```
 `StorageMergeTree::selectPartsToMerge`函数返回一个 MergeMutateSelectedEntry 对象，记录本次 merge 需要将哪些 part 合并成新的 part。然后创建一个 MergePlainMergeTreeTask 对象，将这个 task 交给 MergeMutateExecutor 执行。
+### MergePlainMergeTreeTask
 
 ```plantuml
 class MergePlainMergeTreeTask {
@@ -401,9 +461,98 @@ MergeProjectionsStage -> End : finalizeProjectionsAndWholeMerge
 @enduml
 ```
 
+#### MergeTask
+```plantuml
+class MergeTask {
+    - stages : array<StagePtr, 3>
+    - global_ctx : GlobalRuntimeContext
+}
 
-### VolatilePart
-在创建 MergeTask 的时候
+interface IStage {
+    + {abstract} setRuntimeContext(local, global) : void
+    + {abstract} getContextForNextStage() : StageRuntimeContext
+    + {abstract} execute() : bool
+    + {abstract} \~IStage()
+}
+
+IStage <|-- ExecuteAndFinalizeHorizontalPart
+IStage <|-- VerticalMergeStage
+IStage <|-- MergeProjectionStage
+
+MergeTask *-- ExecuteAndFinalizeHorizontalPart
+MergeTask *-- VerticalMergeStage
+MergeTask *-- MergeProjectionStage
+
+class ExecuteAndFinalizeHorizontalPart {
+    + prepare() : bool
+    + executeImpl() : bool
+    + subtasks : array<function<bool()>, 2>
+    + chooseMergeAlgorithm() : MergeAlgorithm
+    + createMergedStream() : void
+    + global_ctx : GlobalRuntimeContext
+    + ctx : ExecuteAndFinalizeHorizontalPartRuntimeContext
+}
+
+class VerticalMergeStage {
+    + prepareVerticalMergeForAllColumns() : bool
+    + executeVerticalMergeForAllColumns() : bool
+    + finalizeVerticalMergeForAllColumns() : bool
+    + subtasks : array<function<bool()>, 3>
+    ...
+}
+
+class MergeProjectionStage {
+    + mergeMinMaxIndexAndPrepareProjections() : bool
+    + executeProjections() : bool
+    + finalizeProjectionsAndWholeMerge() : bool
+    + subtasks : array<function<bool()>, 3>
+    ...
+}
+```
+##### ExecuteAndFinalizeHorizontalPart
+* prepare()
+```c++
+bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare()
+{
+    ...
+    ctx->disk = global_ctx->space_reservation->getDisk();
+    ...
+    auto local_single_disk_volume = std::make_shared<SingleDiskVolue>("volume_" + global_ctx->future_part->name, ctx->disk, 0);
+    global_ctx->new_data_part = global_ctx->data->createPart(
+        global_ctx->future_part->name,
+        global_ctx->future_part->type,
+        global_ctx->future_part->part_info,
+        local_single_disk_volume,
+        local_tmp_part_basename,
+        global_ctx->parent_part);
+    ...
+    ctx->tmp_disk = global_ctx->context->getTemporaryVolume()->getDisk();
+    
+    switch (global_ctx->chosen_merge_algorithm)
+    {
+        ...
+        ctx->tmp_disk = global_ctx->context->getTemporaryVolume()->getDisk();
+    }
+
+    ...
+
+    createMergedStream();
+
+    global_ctx->to = std::make_shared<MergedBlockOutputStream>(
+        global_ctx->new_data_part,
+        global_ctx->metadata_snapshot,
+        global_ctx->merging_columns,
+        MergeTreeIndexFactory::instance().getMany(global_ctx->metadata_snapshot->getSecondaryIndices()),
+        ctx->compression_codec,
+        /*reset_columns=*/ true,
+        ctx->blocks_are_granules_size);
+
+    ...
+    return false;
+}
+```
+在`ExecuteAndFinalizeHorizontalPart::prepare()`阶段，创建相关的对象，设置本次 MergeTask 的 global_ctx。
+
 
 ### Part Description
 ```plantuml
@@ -461,3 +610,173 @@ class IReservation {
     + {abstract} update(new_size : void
 }
 ```
+
+### VolatilePart
+引入 VolatilePart 的目的是解决 COS 上的写放大。我们不需要将每次 merge 生成的 part 都上传到 COS，只需要将符合一定条件的中间 part 上传至 COS。
+
+在 MergeTask::ExecuteAndFinalizeHorizontalPart::prepare() 中，将会决定 merge 得到的 new_part 被写入哪个磁盘
+```c++
+bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare()
+{
+    ...
+    ctx->disk = global_ctx->space_reservation->getDisk();
+    ...
+    auto local_single_disk_volume = std::make_shared<SingleDiskVolue>("volume_" + global_ctx->future_part->name, ctx->disk, 0);
+    global_ctx->new_data_part = global_ctx->data->createPart(
+        global_ctx->future_part->name,
+        global_ctx->future_part->type,
+        global_ctx->future_part->part_info,
+        local_single_disk_volume,
+        local_tmp_part_basename,
+        global_ctx->parent_part);
+    ...
+}
+```
+这里`ctx->disk`溯源来自于 `MergeMutateSelectedEntry::CurrentlyMergingPartsTagger`，
+```c++
+MergeTasl::MergeTask(
+    FutureMergedMutatedPartPtr future_part_,
+    StorageMetadataPtr metadata_snapshot_,
+    ...
+    ReservationSharedPtr space_reservation_,
+    ...)
+{
+    global_ctx = std::make_shared<GlobalRuntimeContext>();
+
+    global_ctx->future_part = std::move(future_part_);
+    global_ctx->metadata_snapshot = std::move(metadata_snapshot_);
+    ...
+    global_ctx->space_reservation = std::move(space_reservation_);
+    ...
+}
+
+MergeTreeDataMergerMutator::mergePartsToTemporaryPart(
+    FutureMergedMutatedPartPtr future_part,
+    const StorageMetadataPtr & metadata_snapshot,
+    ...
+    ReservationSharedPtr space_reservation,
+    ...)
+{
+    return std::make_shared<MergeTask>(
+        future_part,
+        ...
+        space_reservation,
+        ...
+    )
+}
+
+void MergePlainMergeTreeTask::prepare()
+{
+    ...
+    merge_task = storage.merger_mutator.mergePartsToTemporaryPart(
+            future_part,
+            metadata_snapshot,
+            ...
+            merge_mutate_entry->tagger->reserved_space,
+            ...);
+}
+
+bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assignee)
+{
+    ...
+    merge_entry = selectPartsToMerge(metadata_snapshot, false, {}, false, nullptr, share_lock, lock);
+    ...
+    if (merge_entry)
+    {
+        auto task = std::make_shared<MergePlainMergeTreeTask>(*this, metadata_snapshot, false, Names{}, merge_entry, share_lock, common_assignee_trigger);
+        assignee.scheduleMergeMutateTask(task);
+        return true;
+    }
+}
+
+std::shared_ptr<MergeMutateSelectedEntry> StorageMergeTree::selectPartsToMerge(
+    ...)
+{
+    CurrentlyMergingPartsTaggerPtr merging_tagger;
+    ...
+    merging_tagger = std::make_unique<CurrentlyMergingPartsTagger>(future_part, MergeTreeDataMergerMutator::estimateNeededDiskSpace(future_part->parts), *this, metadata_snapshot, false);
+    return std::make_shared<MergeMutateSelectedEntry>(future_part, std::move(merging_tagger), MutationCommands::create());
+}
+
+CurrentlyMergingPartsTagger::CurrentlyMergingPartsTagger(
+    FutureMergedMutatedPartPtr future_part_,
+    size_t total_size,
+    StorageMergeTree & storage_,
+    const StorageMetadataPtr & metadata_snapshot,
+    bool is_mutation)
+    : future_part(future_part_), storage(storage_)
+{
+    ...
+    reserved_space = storage.balancedReservation(
+            metadata_snapshot,
+            total_size,
+            max_volume_index,
+            future_part->name,
+            future_part->part_info,
+            future_part->parts,
+            &tagger,
+            &ttl_infos);
+    ...
+}
+```
+
+
+
+该对象构造的时候选择了 disk
+```c++
+CurrentlyMergingPartsTagger::CurrentlyMergingPartsTagger(
+    FutureMergedMutatedPartPtr future_part_,
+    size_t total_size,
+    StorageMergeTree & storage_,
+    const StorageMetadataPtr & metadata_snapshot,
+    bool is_mutation)
+    : future_part(future_part_), storage(storage_)
+{
+    if (is_mutation)
+        reserved_space = storage.tryReserveSpace(total_size, future_part->parts[0]->volume);
+    else
+    {
+        IMergeTreeDataPart::TTLInfos ttl_infos;
+        size_t max_volume_index = 0;
+        for (auto & part_ptr : future_part->parts)
+        {
+            ttl_infos.update(part_ptr->ttl_infos);
+            max_volume_index = std::max(max_volume_index, storage.getStoragePolicy()->getVolumeIndexByDisk(part_ptr->volume->getDisk()));
+        }
+
+        reserved_space = storage.balancedReservation(
+            metadata_snapshot,
+            total_size,
+            max_volume_index,
+            future_part->name,
+            future_part->part_info,
+            future_part->parts,
+            &tagger,
+            &ttl_infos);
+    }
+}
+```
+* balancedReservation
+```c++
+
+```
+
+
+#### getActivePartsToReplace
+```c++
+ReservationPtr MergeTreeData::balancedReservation(
+    const StorageMetadataPtr & metadata_snapshot,
+    size_t part_size,
+    size_t max_volume_index,
+    const String & part_name,
+    const MergeTreePartInfo & part_info,
+    MergeTreeData::DataPartsVector covered_parts,
+    std::optional<CurrentlySubmergingEmergingTagger> * tagger_ptr,
+    const IMergeTreeDataPart::TTLInfos * ttl_infos,
+    bool is_insert)
+{
+
+}
+```
+part_name: all_1_3_2
+covered_parts: all_1_2_1, all_3_3_0
