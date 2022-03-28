@@ -202,8 +202,14 @@ MergeTreeData 的 contructor 中构造 BackgroundJobsAssignee 对象。
 
 在 MergeTree 对象启动时，会创建相关的 background job，相关的代码如下：
 ```c++
-BackgroundJobsAssignee(MergeTreeData & data_, Type type, ContextPtr global_context_)
-    : ..., data(data_), ... {}
+StorageMergeTree(
+    const StorageID & table_id_,
+    ...
+    ) : MergeTreeData(
+        table_id_,
+        ...
+    )
+)
 
 MergeTreeData::MergeTreeData(
     const StorageID & table_id_,
@@ -216,14 +222,8 @@ MergeTreeData::MergeTreeData(
     ...
 }
 
-StorageMergeTree(
-    const StorageID & table_id_,
-    ...
-    ) : MergeTreeData(
-        table_id_,
-        ...
-    )
-)
+BackgroundJobsAssignee(MergeTreeData & data_, Type type, ContextPtr global_context_)
+    : ..., data(data_), ... {}
 
 StorageMergeTree::startup()
 {
@@ -316,13 +316,18 @@ void BackgroundJobsAssignee::scheduleMergeMutateTask(ExecutableTaskPtr merge_tas
     res ? trigger() : postpone();
 }
 ```
+这里 BackgroundJobsAssignee 作用总结为：
+1. schedule_pool 执行的是 `BackgroundJobsAssignee::thread_func`
+2. 根据 BackgroundJobsAssignee 的类型，来决定执行 mergemutate 还是 move
+3. 执行 MergeTreeData::scheduleDataProcessingJob 或者 MergeTreeData::scheduleDataMovingJob 来确定如何 mergemutate/move
+4. 创建 Executable Task 交给 Executor 执行
+
 在前面的代码中，出现了两种创建 task 的方法：
 1. `getContext()->getSchedulePool()->createTask()`;
 2. `getContext()->getMergeMutateExecutor()->trySchedule()`
 
-其中第 1 种是在 BackgroundSchedulePool 中创建 BackgroundJob，该 Job 被调度时执行的函数是 `StorageMergeTree::scheduleDataProcessingJob`。该函数运行时决定要对哪些 part 进行 merge，并且通过方法 2 在 MergeMutateBackgroundExecutor 中创建 MergeTask，由 MergeTask 完成具体的 merge 操作。
-
-
+第一个方式创建的即是前面提到的 Background Job，执行 `BackgroundJobsAssignee::thread_func`
+第二个方式由 BackgroundJobsAssignee 在自己的 scheduleMergeMutateTask/scheduleMoveTask 中调用，用于创建执行具体 mergemutate/move 的 Executabl Task
 ### selectPartsToMerge
 ```plantuml
 class MergeMutateSelectedEntry {
@@ -756,10 +761,9 @@ CurrentlyMergingPartsTagger::CurrentlyMergingPartsTagger(
     }
 }
 ```
-* balancedReservation
-```c++
+##### uploadMaterializedVolatilePart
 
-```
+
 
 
 #### getActivePartsToReplace
@@ -780,3 +784,59 @@ ReservationPtr MergeTreeData::balancedReservation(
 ```
 part_name: all_1_3_2
 covered_parts: all_1_2_1, all_3_3_0
+
+## Move
+```c++
+bool MergeTreeData::scheduleDataMovingJob(BackgroundJobsAssignee & assignee)
+{
+
+}
+```
+
+
+```c++
+bool MergeTreePartsMover::selectPartsForMove(
+    MergeTreeMovingParts & parts_to_move,
+    const AllowedMovingPredicate & can_move,
+    const std::lock_guard<std::mutex> & /* moving_parts_lock */)
+{
+    MergeTreeData::DataPartsVector data_parts = data->getDataPartsVector();
+
+    if (data_parts.empty())
+        return false;
+
+    std::unordered_map<DiskPtr, LargestPartsWithRequiredSize> need_to_move;
+    const auto policy = data->getStoragePolicy();
+    const auto & volumes = policy->getVolumes();
+
+    ...
+
+    if (!volumes.empty())
+    {
+        /// Do not check last volume
+        for (size_t i = 0; i != volumes.size() - 1; ++i)
+        {
+            for (const auto & disk : volumes[i]->getDisks())
+            {
+                UInt64 required_maximum_available_space = disk->getTotalSpace() * policy->getMoveFactor();
+                UInt64 unreserved_space = disk->getUnreservedSpace();
+
+                if (unreserved_space < required_maximum_available_space && !disk->isBroken())
+                    need_to_move.emplace(disk, required_maximum_available_space - unreserved_space);
+            }
+        }
+    }
+
+    ...
+
+    for (const auto & part : data_parts)
+    {
+        if (!can_move(part, &reason))
+            continue;
+        
+        auto ttl_entry = selectTTLDescriptionForTTLInfos(metadata_snapshot->getMoveTTLs(), part->ttl_infos.moves_ttl, time_of_move, true);
+
+
+    }
+}
+```

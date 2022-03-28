@@ -8,11 +8,11 @@ ReplicatedMergeTree 相比普通的 MergeTree 最大的区别在于添加了不�
 ### Initial 节点
 initial 节点的写入过程总体来看需要完成两个任务，首先是 part 在本地的写入，其次是在 zk 中创建一条 log 告诉其他 replica (实际上包含自己) 需要进行 fetch。
 ```c++
-void ReplicatedMergeTreeBlockOutputStream::write(const Block & block)
+void ReplicatedMergeTreeSink::consume(Chunk chunk)
 {
     ...
     auto part_blocks = storage.writer.splitBlockIntoParts(block, max_parts_per_block, metadata_snapshot);
-
+    ...
     for (auto & current_block : part_blocks)
     {
         ...
