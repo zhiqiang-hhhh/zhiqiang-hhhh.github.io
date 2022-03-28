@@ -10,31 +10,82 @@
 
 # 方案思路
 
-- Clickhouse中引入一种VolatilePart，这种Part 的特点是：
-	- 它是由merge或者mutation产生，insert不能产生这种part。
-	- 它产生之后，写入到本地磁盘，不会写入到COS，所以它的数据可能丢失。
-	- 当它的数据上传到COS 之后，它就变成非volatile part了。
-	- 所有NormalPart（也就是非VolatilePart）写入的时候直接写入COS。
-	- 当读取的时候如果VolatilePart 不存在的话，那么就要从NormalPart中读取数据。
-	
-- Clickhouse 中我们实现2种DataPartVector
-	- 类型一，NormalDataPartVector： 只包含非VolatilePart，这个列表跟当前的DataPartVector一致。
-	- 类型二，VolatilePartVector： 包含VolatilePart。
+- Clickhouse 中引入一种 VolatilePart，这种 Part 的特点是：
+	- 它是由 merge 或者 mutation 产生，insert 不能产生这种 part，insert 只能产生 normal part；
+	- volatile part 产生后，由 materialize 方法将其写入到本地磁盘，不会写入到COS，所以它的数据可能丢失；
+	- 当 materialized part 被上传到 cos 后，它将会变为 normal part；
+	- 所有 normal part 写入的时候直接写入COS；
+	- 当读取的时候如果 volatile part 不存在，那么就要从其对应的 source normal part 中读取若干小 part。
+  
+我们为 volatile part 引入一个新的数据类型：
+```c++
+struct VolatilePartEntry
+{
+    using DataPartsVector = MergeTreeData::DataPartsVector;
+    using DataPartPtr = MergeTreeData::DataPartPtr;
 
-- 更新Part列表的时候：
-	- 先更新VolatilePartVector
-	- 如果当前操作Part是NormalPart，那么还需要操作NormalPartVector
-	- 通过这种机制，能够保证VolatilePart的数据如果被删除了，那么是可以从NormalPartVector中找到对应的NormalPart来恢复的。
+    VolatilePartEntry() = default;
 
-下面我们通过我们系统中几种操作来看看如何工作的：
+    VolatilePartEntry(const DataPartPtr & to_part_, const DataPartsVector & from_parts_) : to_part(to_part_), from_parts(from_parts_) { }
 
-**Merge 操作**
+    DataPartPtr to_part;
+    DataPartsVector from_parts;
+};
+```
+对于 materialized part，其使用方式与 normal part 几乎一致，所以沿用 normal part 的数据类型。这样我们在 StorageShareDiskMergeTree 中将会包含如下 part 相关数据成员：
+```c++
+class StorageShareDiskMergeTree
+{
+	class MergeTreeData
+	{
+		mutable std::mutex data_parts_mutex;
+		DataPartsIndexes data_parts_indexes;
+		DataPartsIndexes::index<TagByInfo>::type & data_parts_by_info;
+		DataPartsIndexes::index<TagByStateAndInfo>::type & data_parts_by_state_and_info;
+	};
 
-- 多个节点都可以参与Merge，Merge的时候，先选择要Merge的Part，生成一个VolatilePart，写入Manifest。
-- 当前节点以及其他replay操作的副本都更新VolatilePartVector
-- 后续的读取操作都按照VolatilePartVector来读取，当然此时数据一定不存在，会读取对应的NormalPart的数据。
-- 每个副本都可以拿到一个VolatilePart，如果对应的数据不存在，那么就在本地生成这个数据，然后上传到COS，上传到COS 之后，把VolatilePart更新为NormalPart。
-- manifest的snapshot操作时跟现有的保持不变
+	std::vector<VolatilePartEntry> volatile_parts;
+
+	MergeTreeData::DataPartsIndexes materialized_parts;
+	MergeTreeData::DataPartsIndexes::index<TagByInfo>::type & materialized_parts_by_info;
+	MergeTreeData::DataPartsIndexes::index<TagByStateAndInfo>::type & materialized_parts_by_state_and_info;
+}
+```
+所有对内存中 part 信息的操作都需要保证在加 parts_lock 前后，normal parts，volatile parts，以及 materialized parts 三者的逻辑关系保持一致。
+为了简便表述，我们称 nparts(normal parts)，vparts(volatile parts), mparts(materialized parts)，三者的并集为大集合，vparts 与 mparts 的集合为小集合。一致的关系具体为：
+1. volatile_parts.from_parts 中的每个 parts 必须存在于大集合中
+2. mparts 与 vparts 的交集为空
+3. 大集合一定是小集合的超集
+
+关系 1 是因为，当 vpart 产生时，它的 source part 一定属于某个节点本地的 nparts + mparts，而 mpart 实际上也是从 vpart 转化来的，那么在其他节点上，当它 replay 一条 add volatile parts 的 log 时，它可能还没有进行过 materialization，那么它看到的 source parts 就可能是 nparts + vparts；
+关系 2 是因为 mparts 都是从 vparts 转化来的，一一对应
+关系 3 是因为，npart 只有在有 mpart 被 upload 到 cos 之后，才可能被删除，在此之前，nparts 一定存在，同时 nparts 还在不停的接收 insert parts 
+
+
+**Merge**
+
+原先的 Merge 过程是先在本地 selectPartsToMerge，然后执行 merge，最后通过 addPartAndReplace 将 new_merged_part 添加到 manifest 中。
+引入 volatile part 后，整个 merge 流程会产生较大的 改动：
+1. selectPartsToMerge 的 source parts 将会是 normal parts 和 materialized part 的并集，由于 materialized part 一定有对应的 normal part，所以实际上结果中将是 materialized part + normal part 中不被 materialized part 包含的部分；
+2. 一旦产生了一条 MergeEntry，那么先 commit 一条 add volatile part 类型的 op log，如果 commit 不成功，本次 merge 结束；
+3. commit 成功后，原始节点执行 materialization 过程，materialization 与之前的 merge 动作一样
+4. materialization 结束后，不再产生 oplog，而是修改内存，将 volatile part 添加到 materialized_part 中，注意，此时不删除 normal parts
+5. 后台的 uploader 线程根据一定的规则，选择本地 materialize part，将其上传到 cos
+6. upload 过程需要先上传 cos，再添加一条 upsert part log，最后修改内存，如果 commit op log失败，需要将 uploaded part 从 cos 删除
+7. upload 成功后，将对应的 normal parts 删除
+
+Merge 过程中比较复杂的地方是：
+1. 如何判断当前的 add vpart log 是没有冲突的
+2. 内存状态应该如何修改
+
+对于第一个点，由于任何一个节点都可以尝试添加 add vpart log，并且其在创建 add vpart log时内存的状态可能都不一样，因此我们可能需要将判定 log 内容冲突的条件放宽一些。
+1. 逐条 compare op log
+2. 如果有另一条 add vpart 或者 upsert part，且其 min_block + max_block 覆盖/等于/相交 当前 log 的 vpart，那么本次 commit 需要被放弃
+
+对于第二个点。由于内存修改一定是在成功 commit op log 之后，所以这里我们假设内存状态一定是正确的。
+1. add vpart log 只需要添加新元素即可
+2. add materialized 需要将对应的 vpart 删除，且添加新的 mpart
+3. upload mpart 需要将小集合中对应的 part 以及 nparts 中 covered parts 删除
 
 **Mutation 操作**
 
@@ -56,8 +107,3 @@
 - 暂时不支持
 
 **Truncate Table操作**
-
-
-	
-
-
