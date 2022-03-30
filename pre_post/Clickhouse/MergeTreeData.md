@@ -3,7 +3,7 @@
 
 ## ThreadPool, Thread, Executor, Task
 
-Context 全局共享。
+Context 全局共享，其中包含多个全局共享的 thread pool 以及 executor。
 
 ```plantuml
 class Context
@@ -19,8 +19,8 @@ class Context
     ...    
 }
 ```
-BackgroundSchedulePool: 在某个时间点调度执行 functions。基本上，所有的 tasks 都会被添加到一个 queue 中，然后被 worker threads 处理。典型的使用方式：在 BackgroundSchedulePool 中创建一个 task，当你确实需要执行该 task 时，再调用该 task 的 schedule 方法。
-
+### BackgroundThreadPool
+BackgroundSchedulePool: 在某个时间点调度执行 threadFunction。
 ```plantuml
 class BackgroundSchedulePool
 {
@@ -55,8 +55,40 @@ class BackgroundSchedulePoolTaskInfo
 
 BackgroundSchedulePoolTaskInfo *-- BackgroundSchedulePool
 ```
-为了进行区别，我们称 BackgroundSchedulePool 能够执行的 task 为 background job，还有一种 task 类型是 executable task，这类 task 由各种 Executor 执行。
+典型的使用方式：在 BackgroundSchedulePool 中创建一个 task，当你确实需要执行该 task 时，再调用该 task 的 schedule 方法。比如 BackgroundJobsAssignee 在其 start 方法中创建一个 task：
+```c++
+void BackgroundJobsAssignee::start()
+{
+    std::lock_guard lock(holder_mutex);
+    if (!holder)
+        holder = getContext()->getSchedulePool().createTask("BackgroundJobsAssignee:" + toString(type), [this]{ threadFunc(); });
 
+    holder->activateAndSchedule();
+}
+```
+BackgroundSchedulePool 就是一个最简单的 thread pool 模型。唯一需要注意的是，BackgroundSchedulePool 的 worker thread 并不是操作系统直接提供的线程，而是 GlobalThread 中的一个 “task”。所有 BackgroundSchedulePool 都是在全局的线程池中创建任务，执行 `BackgroundSchedulePool::threadFunction()`。观察其构造函数：
+```c++
+BackgroundSchedulePool::BackgroundSchedulePool(size_t size_, CurrentMetrics::Metric tasks_metric_, const char *thread_name_)
+    : size(size_)
+    , tasks_metric(tasks_metric_)
+    , thread_name(thread_name_)
+{
+    LOG_INFO(&Poco::Logger::get("BackgroundSchedulePool/" + thread_name), "Create BackgroundSchedulePool with {} threads", size);
+
+    threads.resize(size);
+    for (auto & thread : threads)
+        thread = ThreadFromGlobalPool([this] { threadFunction(); });
+
+    delayed_thread = ThreadFromGlobalPool([this] { delayExecutionThreadFunction(); });
+}
+```
+全局的 GlobalPool 中 task 如何调度，以及 BackgroundScuedulePool 中的各个 task 如何调度对于使用者来说是透明的。
+
+GlobalContext 中除了 BackgroundSchedulePool 之外，还有一些 Executor。我们称 BackgroundSchedulePool 能够执行的 task 为 background job，还有一种 task 类型是 executable task，这类 task 由各种 Executor 执行。
+
+以 Merge 为例，“MergeJob” 是 BackgroundSchedulePool 中的一个 job，这个 job 执行的内容是决定如何进行 merge，创建一个 MergePlainMergeTreeTask 对象，将该对象交给全局的 MergeMutateExecutor 去执行。
+
+### Executor
 ```plantuml
 @startuml
 
@@ -113,12 +145,11 @@ class ThreadPool
     + scheduleOrThrow(Job, priority, wait_microseconds) : void
     + wait() : void
 }
-
-
 @enduml
 ```
+`MergeTreeBackgroundExecutor`也是一个线程池实现。与 BackgroundSchedulePool 一样，它的 worker thread 也是来自于 GlobalThreadPool 中的线程。Executor 与 ThreadPool 的区别在于两者执行 task 的方式不同。
 
-Executable task 是 Clickhouse 自己写的 coroutine，所有的后台操作都可以通过实现 `IExecutableTask` 来创建一个 task。每个 Task 都是 a sequence of steps, 较重的 task 需要更多的 steps，Executor 每次只调度 task 执行一个 step，这样可以实现不同 task 穿插执行。
+Executor 执行的是 Executable task，它是 Clickhouse 自己写的 coroutine，所有的后台操作都可以通过实现 `IExecutableTask` 来创建一个 task。每个 Task 都是 a sequence of steps, 较重的 task 需要更多的 steps，Executor 每次只调度 task 执行一个 step，这样可以实现不同 task 穿插执行。
 
 在原先的设计中，一次Merge交给一个线程全程执行，现在将线程细分到coroutine之后，需要额外保存每个coroutine的执行上下文，确保coroutine切换回来再次执行的时候能够继续上次的状态。MergeTask::IStageRuntimeContext 用于完成该目标。
 
