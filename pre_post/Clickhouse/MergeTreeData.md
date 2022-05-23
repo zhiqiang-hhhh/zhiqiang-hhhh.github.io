@@ -187,7 +187,72 @@ MergeTreeDataWriter::TemporaryPart MergeTreeDataWriter::writeTempPart(
     auto finalizer = out->finalizePartAsync(new_data_part, data_settings->fsync_after_insert);
     ...
 }
+```
 
+### index
+```plantuml
+class IMergeTreeDataPart
+{
+    index : Index
+    minmax_idx : MinMaxIndex
+}
+
+IMergeTreeDataPart *-- Index
+IMergeTreeDataPart *-- MinMaxIndex
+
+class Index
+{
+    std::vector<IColumn>
+}
+
+Index *-- IColumn
+```
+两部分 index，一个是 index 数据成员，将 primary key 所在的列全部保存在内存里，另一个是 minmaxindex。
+
+Index 的初始化：
+1. 写入 part 时的初始化：
+```c++
+MergeTreeDataWriter::TemporaryPart MergeTreeDataWriter::writeTempPart(
+    BlockWithPartition & block_with_partition, const StorageMetadataPtr & metadata_snapshot, ContextPtr context)
+{
+    ...
+    auto finalizer = out->finalizePartAsync(new_data_part, data_settings->fsync_after_insert);
+    ...   
+}
+
+MergedBlockOutputStream::Finalizer MergedBlockOutputStream::finalizePartAsync(
+        MergeTreeData::MutableDataPartPtr & new_part,
+        bool sync,
+        const NamesAndTypesList * total_columns_list,
+        MergeTreeData::DataPart::Checksums * additional_column_checksums)
+{
+    ...
+    new_part->index = writer->releaseIndexColumns();
+    ...
+}
+```
+2. 启动时候 loadIndex
+```c++
+void IMergeTreeDataPart::loadColumnsChecksumsIndexes(bool require_columns_checksums, bool check_consistency)
+{
+    ...
+    loadIndex();     /// Must be called after loadIndexGranularity as it uses the value of `index_granularity`
+    ...
+}
+
+void IMergeTreeDataPart::loadIndex()
+{
+    ...
+    index.assign(std::make_move_iterator(loaded_index.begin()), std::make_move_iterator(loaded_index.end()));
+}
+```
+
+
+```c++
+auto minmax_idx = std::make_shared<IMergeTreeDataPart::MinMaxIndex>();
+minmax_idx->update(block, data.getMinMaxColumnsNames(metadata_snapshot->getPartitionKey()));
+...
+new_data_part->minmax_idx = std::move(minmax_idx;
 ```
 
 ## Merge
@@ -384,6 +449,25 @@ class FutureMergedMutatedPart {
     + updatePath(MergeTreeData, IReservation) : void
 }
 ```
+StorageMergeTree::selectPartsToMerge 函数通过上述的数据结构，来标记哪些 part 可以被 merge。
+```c++
+std::shared_ptr<MergeMutateSelectedEntry> StorageMergeTree::selectPartsToMerge(
+    const StorageMetadataPtr & metadata_snapshot,
+    bool aggressive,
+    const String & partition_id,
+    bool final,
+    String * out_disable_reason,
+    TableLockHolder & /* table_lock_holder */,
+    std::unique_lock<std::mutex> & lock,
+    bool optimize_skip_merged_partitions,
+    SelectPartsDecision * select_decision_out);
+```
+该函数的入参包含 `std::unique_lock lock(currently_processing_in_background_mutex);` 的引用。这个锁用于保护 `StorageMergeTree::currently_merging_mutating_parts`，记录了当前有哪些 part 正在被 merge 或者 mutate。
+
+selectPartsToMerge 的返回值中包含 CurrentlyMergeingPartsTagger，在构造该对象时，会将 parts 插入到 `StorageMergeTree::currently_merging_mutating_parts` 中，在该对象的析构函数中，会再次加锁，然后修改 `StorageMergeTree::currently_merging_mutating_parts` 删除被添加的 parts。因此，要求该对象构造时，调用者加锁，该对象析构时，锁已经被释放。
+
+
+
 ### MergeJob
 
 ```c++
@@ -647,9 +731,6 @@ class IReservation {
 }
 ```
 
-### VolatilePart
-引入 VolatilePart 的目的是解决 COS 上的写放大。我们不需要将每次 merge 生成的 part 都上传到 COS，只需要将符合一定条件的中间 part 上传至 COS。
-
 在 MergeTask::ExecuteAndFinalizeHorizontalPart::prepare() 中，将会决定 merge 得到的 new_part 被写入哪个磁盘
 ```c++
 bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare()
@@ -792,11 +873,6 @@ CurrentlyMergingPartsTagger::CurrentlyMergingPartsTagger(
     }
 }
 ```
-##### uploadMaterializedVolatilePart
-
-
-
-
 #### getActivePartsToReplace
 ```c++
 ReservationPtr MergeTreeData::balancedReservation(

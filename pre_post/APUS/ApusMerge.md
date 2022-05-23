@@ -1,3 +1,5 @@
+[TOC]
+
 # 云原生的Merge策略
 
 # 问题背景
@@ -107,3 +109,65 @@ Merge 过程中比较复杂的地方是：
 - 暂时不支持
 
 **Truncate Table操作**
+
+
+
+# 实现细节
+data_parts 数据结构保存本地处于 active 状态的 normal parts 和 materialized parts
+
+```c++
+selectPartsToMaterialize
+{
+	res;
+	for v_part in volatile_parts
+	{
+		bool can_materialize = true;
+		for src_part in v_part.src_parts
+		{
+			if !data_parts.contains(src_part) || partIsBeingMergedMutated(src_pars)
+			{
+				can_materialize = false;
+				break;
+			}
+		}
+		if(can_materialize)
+		{
+			for (src_part in v_part.src_parts)
+				tagPartBeingMergedMutated(src_part);
+			
+			res.push_back(v_part);
+		}
+	}
+	return res;
+}
+```
+materialized part 一定是本地 materialize 或者进程启动时 load 进来的。
+mpart 需要 replace 的 part 可以是 normal parts 以及 meterialized parts。如果不是在loadDataParts时调用的该函数，那么m_part的origin_vpart一定还存在内存中，需要将该vpart删除。在将mpart添加到内存中时，需要被它覆盖的parts全部replace，normal parts不能被删除（还未被upload），mparts需要从本地磁盘删除。在产生snapshot时，
+```c++
+addMaterializedPart(m_part, is_load)
+{
+	parts_to_replace = getDataPartsToReplace(m_part);
+
+	if (!is_load)
+	{
+		origin_vpart = getVolatilePart(m_part->uuid);
+		assert(origin_vpart != nullptr);
+
+		volatile_parts.erase(origin_vpart);
+	}
+	
+	for (part : parts_to_replace)
+	{
+		data_parts.erase(part);
+		if (part.isStoredOnRemote())
+		{
+			replaced_normal_parts.insert(part);
+		}
+		else
+		{
+			part.remove();
+		}
+	}
+}
+```
+

@@ -1,31 +1,76 @@
 #include <iostream>
 
 using namespace std;
+class Base
+{
+public:
 
-class Foo {
-    public:
-        Foo() { std::cout << "Foo::Foo()\n"; }
-        Foo(const Foo& foo1_) { std::cout << "Foo::Foo(const Foo&)\n"; }
-        const Foo& operator=(const Foo&) {
-            std::cout << "Foo::operator=(const Foo&)\n"; 
-            return *this;
-        }
+    void NormalFunc() {
+        std::cout << "Base::NormalFunc()\n";
+    }
 
+    virtual void VirtualFunc() {
+        std::cout << "Base::Virtual()\n";
+    }
+
+    virtual void PureVirtualFunc() = 0;
 };
 
-class Bar {
-    private:
-        Foo foo;
-    public:
-        Bar() { std::cout << "Bar::Bar()\n"; }
-        Bar(const Foo& foo_) : foo(foo_) {}
-        // Bar(const Foo& foo_) {
-        //    foo(foo_);
-        // }
+class Drive1 : public Base
+{
+public:
+
+    void NormalFunc() {
+        std::cout << "Drive1::NormalFunc()\n";
+    }
+
+    void VirtualFunc() override {
+        std::cout << "Drive1::VirtualFunc()\n";
+    }
+
+    void PureVirtualFunc() override {
+        std::cout << "Drive1::PureVirtualFunc()\n";
+    }
 };
 
-int main(){
-    Foo foo;
-    Bar bar(foo);
+class Drive2 : public Base
+{
+public:
+
+    void NormalFunc() {
+        std::cout << "Drive2::NormalFunc()\n";
+    }
+
+    void VirtualFunc() override {
+        std::cout << "Drive2::VirtualFunc()\n";
+    }
+
+    void PureVirtualFunc() override {
+        std::cout << "Drive2::PureVirtualFunc()\n";
+    }
+};
+
+
+int main ()
+{
+    Base * base_ptr;
+    base_ptr = new Drive1();
+    base_ptr->NormalFunc();
+    base_ptr->VirtualFunc();
+    base_ptr->PureVirtualFunc();
+
+    Drive1 * d1_ptr = dynamic_cast<Drive1 *>(base_ptr);
+
+    d1_ptr->NormalFunc();
+
+    delete base_ptr;
+
+    base_ptr = new Drive2();
+    base_ptr->NormalFunc();
+    base_ptr->VirtualFunc();
+    base_ptr->PureVirtualFunc();
+
+    delete base_ptr;
+
     return 0;
 }
