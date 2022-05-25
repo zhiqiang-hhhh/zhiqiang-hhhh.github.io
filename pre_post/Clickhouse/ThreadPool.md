@@ -1,33 +1,6 @@
 Server::main
 
 ```plantuml
-BaseDaemon <-- Server
-IServer <-- Server
-
-class IServer
-{
-    {abstract} config() : Configuration
-    {abstract} context() : ContextMutablePtr
-}
-
-class Server
-```
-关于 path
-```c++
-Server::main()
-{
-    ...
-    std::string path_str = getCanonicalPath(config().getString("path", DBMS_DEFAULT_PATH));
-    fs::path path = path_str;
-    ...
-    global_context->setPath(path_str);
-    ...
-}
-```
-
-
-
-```plantuml
 class JobWithPriority
 {
     + job : Job
