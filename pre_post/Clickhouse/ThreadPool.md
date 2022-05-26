@@ -1,4 +1,6 @@
-Server::main
+[TOC]
+
+### ThreadPoolImpl
 
 ```plantuml
 class JobWithPriority
@@ -192,12 +194,18 @@ void ThreadPoolImpl<Thread>::worker(typename std::list<Thread>::iterator thread_
 * D
   Job 执行完成，减少 scheduled_jobs 计数（这里可以看到该参数记录的是 running + queued jobs)。如果 threads 的数量超过了 scheduled + max_free_threads，即如果空闲线程的数量超出了 max_free_threads，则将该线程 detach 并且析构。否则当前 worker 将会尝试从 jobs 中选择下一个 job 去执行。
   
-```plantuml
-class BackgroundSchedulePool
+### BackgroundSchedulePool
+```c++
+BackgroundSchedulePool & Context::getSchedulePool() const
 {
-
+    auto lock = getLock();
+    if (!shared->schedule_pool)
+        shared->schedule_pool.emplace(
+            settings.background_schedule_pool_size,
+            CurrentMetrics::BackgroundSchedulePoolTask,
+            "BgSchPool");
+    return *shared->schedule_pool;
 }
-
 ```
 ```c++
 BackgroundSchedulePool::BackgroundSchedulePool(size_t size_, CurrentMetrics::Metric tasks_metric_, const char *thread_name_)
@@ -214,4 +222,179 @@ BackgroundSchedulePool::BackgroundSchedulePool(size_t size_, CurrentMetrics::Met
     delayed_thread = ThreadFromGlobalPool([this] { delayExecutionThreadFunction(); });
 }
 ```
-BackgroundSchedulePool 在构造的时候，是向 GlobalThreadPool 中添加了 size 个 job，每个 job 在被执行的时候，执行的是 `BackgroundSchedulePool::threadFunction()`。
+BackgroundSchedulePool 对象构造时，向 GlobalThreadPool 中添加了 size 个 job，每个 job 在被执行的时候，执行的是 `BackgroundSchedulePool::threadFunction()`。
+
+
+NOTE：存疑，好像既有 context 中全局共享的 BgSchPool 也有各个 table 自己独占的。
+size 大小由 settings.background_schedule_pool_size 决定，默认为 128。**这 128 个线程是全局所有 table 共用的。**
+```c++
+void BackgroundSchedulePool::threadFunction()
+{
+    setThreadName(thread_name.c_str());
+
+    attachToThreadGroup();
+
+    while (!shutdown)
+    {
+        /// We have to wait with timeout to prevent very rare deadlock, caused by the following race condition:
+        /// 1. Background thread N: threadFunction(): checks for shutdown (it's false)
+        /// 2. Main thread: ~BackgroundSchedulePool(): sets shutdown to true, calls queue.wakeUpAll(), it triggers
+        ///    all existing Poco::Events inside Poco::NotificationQueue which background threads are waiting on.
+        /// 3. Background thread N: threadFunction(): calls queue.waitDequeueNotification(), it creates
+        ///    new Poco::Event inside Poco::NotificationQueue and starts to wait on it
+        /// Background thread N will never be woken up.
+        /// TODO Do we really need Poco::NotificationQueue? Why not to use std::queue + mutex + condvar or maybe even DB::ThreadPool?
+        constexpr size_t wait_timeout_ms = 500;
+        if (Poco::AutoPtr<Poco::Notification> notification = queue.waitDequeueNotification(wait_timeout_ms))
+        {
+            TaskNotification & task_notification = static_cast<TaskNotification &>(*notification);
+            task_notification.execute();
+        }
+    }
+}
+```
+每个 background_thread 都是一个无限循环，从 BackgroundSchedulePool::queue 中取一个 task 来执行。
+
+#### BackgroundThreadPool 任务调度
+使用者通过`TaskHolder createTask(const std::string & log_name, const TaskFunc & function)` 来创建一个 BackgroundSchedulePoolTaskHolder，其中包含一个 BackgroundSchedulePoolTaskInfo。
+
+注意，createTask 函数并不是立刻将 task 添加到 BgSchPool 的 queue 中。这里 createTask 可能更应该理解为是注册一个 task，所以后续将使用注册 task 来指代 createTask 函数。
+
+当使用者希望 Task 被执行时，通过 `BackgroundSchedulePoolTaskInfo::scheduleImpl()` 来将任务添加到 BgSchPool 的 queue 内：
+```c++
+void BackgroundSchedulePoolTaskInfo::scheduleImpl(std::lock_guard<std::mutex> & schedule_mutex_lock)
+{
+    scheduled = true;
+
+    if (delayed)
+        pool.cancelDelayedTask(shared_from_this(), schedule_mutex_lock);
+
+    /// If the task is not executing at the moment, enqueue it for immediate execution.
+    /// But if it is currently executing, do nothing because it will be enqueued
+    /// at the end of the execute() method.
+    if (!executing)
+        pool.queue.enqueueNotification(new TaskNotification(shared_from_this()));
+}
+```
+添加完成后，如果有空闲的 background thread，那么它将会从 threadFunction 中被唤醒，执行 task。
+
+#### BackgroundJobsAssignee
+* 任务注册
+  
+MergeTreeData 构造的时候会构造两个 BackgroundJobsAssignee。
+
+```c++
+class BackgroundJobsAssignee
+{
+private:
+    MergeTreeData & data;
+    BackgroundSchedulePool::TaskHolder holder;
+
+public:
+    void start();
+    ...
+private:
+    /// Function that executes in background scheduling pool
+    void threadFunc();  
+}
+
+void BackgroundJobsAssignee::start()
+{
+    std::lock_guard lock(holder_mutex);
+    if (!holder)
+        holder = getContext()->getSchedulePool().createTask("BackgroundJobsAssignee:" + toString(type), [this]{ threadFunc(); });
+
+    holder->activateAndSchedule();
+}
+
+void BackgroundJobsAssignee::threadFunc()
+try
+{
+    bool succeed = false;
+    switch (type)
+    {
+        case Type::DataProcessing:
+            succeed = data.scheduleDataProcessingJob(*this);
+            break;
+        case Type::Moving:
+            succeed = data.scheduleDataMovingJob(*this);
+            break;
+    }
+
+    if (!succeed)
+        postpone();
+}
+catch (...) /// Catch any exception to avoid thread termination.
+{
+    tryLogCurrentException(__PRETTY_FUNCTION__);
+    postpone();
+}
+```
+
+在 `BackgroundJobsAssignee::start()` 中，向全局的 BgSchPool 注册一个 task，task 执行的函数为 `BackgroundJobsAssignee::threadFunc()`
+
+* 任务触发
+```c++
+void BackgroundJobsAssignee::trigger()
+{
+    std::lock_guard lock(holder_mutex);
+
+    if (!holder)
+        return;
+
+    /// Do not reset backoff factor if some task has appeared,
+    /// but decrease it exponentially on every new task.
+    no_work_done_count /= 2;
+    /// We have background jobs, schedule task as soon as possible
+    holder->schedule();
+}
+```
+
+
+### ReplicatedMergeTree 的 BgSchPool
+MergeTree 没有特殊的 BgSchPool，就是 MergeTreeData 里的两个 BackgroundJobsAssignee。分别负责 MergeMutate 和 Move。着重看一下 ReplicatedMergeTree。
+
+```c++
+StorageReplicatedMergeTree::StorageReplicatedMergeTree(
+        ...
+    ) : MergeTreeData (...)
+    , ...
+    , cleanup_thread(*this)
+    , part_check_thread(*this)
+    , restarting_thread(*this)
+    , ...
+{
+    queue_updating_task = getContext()->getSchedulePool().createTask(
+        getStorageID().getFullTableName() + " (StorageReplicatedMergeTree::queueUpdatingTask)", [this]{ queueUpdatingTask(); });
+
+    mutations_updating_task = getContext()->getSchedulePool().createTask(
+        getStorageID().getFullTableName() + " (StorageReplicatedMergeTree::mutationsUpdatingTask)", [this]{ mutationsUpdatingTask(); });
+
+    merge_selecting_task = getContext()->getSchedulePool().createTask(
+        getStorageID().getFullTableName() + " (StorageReplicatedMergeTree::mergeSelectingTask)", [this] { mergeSelectingTask(); });
+
+    /// Will be activated if we win leader election.
+    merge_selecting_task->deactivate();
+
+    mutations_finalizing_task = getContext()->getSchedulePool().createTask(
+        getStorageID().getFullTableName() + " (StorageReplicatedMergeTree::mutationsFinalizingTask)", [this] { mutationsFinalizingTask(); });
+
+    ...
+}
+```
+已经把 ReplicatedMergeTree 构造函数中与任务创建相关的代码都列出来了。函数内部的 4个 task 均注册在了全局的 BgSchPool 内。三个 thread 中我们挑 
+ReplicatedMergeTreeCleanupThread 来分析。
+
+```c++
+ReplicatedMergeTreeCleanupThread::ReplicatedMergeTreeCleanupThread(StorageReplicatedMergeTree & storage_)
+    : storage(storage_)
+    , log_name(storage.getStorageID().getFullTableName() + " (ReplicatedMergeTreeCleanupThread)")
+    , log(&Poco::Logger::get(log_name))
+{
+    task = storage.getContext()->getSchedulePool().createTask(log_name, [this]{ run(); });
+}
+```
+每个 thread 也是在全局的 BgSchPool 内注册一个 task。
+
+
+### 任务触发
