@@ -1,13 +1,15 @@
 ### Array 的内存表示
+
+array 类型对应的内存中的类型为 ColumnArray，该类型包含两个数组，一个 data 数组顺序保存该所有的 element，这个数组是连续的，另一个 offset 数组保存每个 array 在 ColumnArray 中的起始位置，以下面的 sql 为例，
 ```sql
 create table arrayTest(key Int8,  arr Array(Int8)) engine=MergeTree() order by key;
 
-insert into table arrayTest2 values (1, [1,2,3,4]),(2,[2,3,4,5]),(3,[3,4])
+insert into table arrayTest values (1, [1,2,3,4]),(2,[5,6,7,8]),(3,[9,10])
 ```
-array 类型对应的内存中的类型为 ColumnArray，该类型包含两个数组，一个 data 数组顺序保存该所有的 element，这个数组是连续的，另一个 offset 数组保存每个 element 中包含多少个“元素”，类似下图：
+对应 ColumnArray 的内存分布类似下图：
 ```txt
 data:   [1,2,3,4,2,3,4,5,3,4]
-offset: [3,7,9]
+offset: [4,8,10]
 ```
 观察 `ColumnArray::getDataAt(size_t n)` 的实现更好的理解：
 ```c++
@@ -32,6 +34,30 @@ StringRef ColumnArray::getDataAt(size_t n) const
     return StringRef(first.data, last.data + last.size - first.data);
 }
 ```
+`offsetAt(n)`的计算利用了 PODArray 的一个特性：在 -1 的位置填充默认值，对于 ColumeOffset 这个默认值为 0。
+```c++
+size_t ALWAYS_INLINE offsetAt(ssize_t i) const { return getOffsets()[i - 1]; }
+```
+所以这里 `offsetAt(0) == getOffsets()[-1]`，结果为 0。
+
+
+
+
+
+```c++
+MutableColumnPtr ColumnArray::cloneResized(size_t to_size) const
+{
+    auto res = ColumnArray::create(getData().cloneEmpty());
+
+    if (to_size == 0)
+        return res;
+    
+    size_t from_size = size();
+
+    if (to_size <= from_size)
+}
+```
+
 #### Block
 ```plantuml
 @startuml
@@ -278,7 +304,9 @@ static void executeAction(const ExpressionActions::Action & action, ExecutionCon
 ----
 来看一下 arrayMap 具体是如何执行的：
 ```c++
-ColumnPtr executeImpl(const ColumnsWithTypeAndName & arguments, const DataTypePtr &, size_t) const override
+ColumnPtr executeImpl(
+    const ColumnsWithTypeAndName & arguments, 
+    const DataTypePtr &, size_t) const override
 {
     ...
     /// A 找到需要执行的 lambda 表达式
@@ -368,8 +396,29 @@ for i = 0; i < array_max_size; ++i
 
 ---
 
-ColumnArray::filter
+##### ColumnArray::filter
 ```c++
+ColumnPtr ColumnArray::filter(const Filter & filt, ssize_t result_size_hint) const
+{
+    if (typeid_cast<const ColumnUInt8 *>(data.get()))      return filterNumber<UInt8>(filt, result_size_hint);
+    ...
+}
+
+template <typename T>
+ColumnPtr ColumnArray::filterNumber(const Filter & filt, ssize_t result_size_hint) const
+{
+    if (getOffsets().empty())
+        return ColumnArray::create(data);
+
+    auto res = ColumnArray::create(data->cloneEmpty());
+
+    auto & res_elems = assert_cast<ColumnVector<T> &>(res->getData()).getData();
+    Offsets & res_offsets = res->getOffsets();
+
+    filterArraysImpl<T>(assert_cast<const ColumnVector<T> &>(*data).getData(), getOffsets(), res_elems, res_offsets, filt, result_size_hint);
+    return res;
+}
+
 template <typename T, typename ResultOffsetsBuilder>
 void filterArraysImplGeneric(
     const PaddedPODArray<T> & src_elems, const IColumn::Offsets & src_offsets, PaddedPODArray<T> & res_elems, IColumn::Offsets * res_offsets, const IColumn::Filter & filt, ssize_t result_size_hint)
@@ -407,4 +456,17 @@ void filterArraysImplGeneric(
     static constexpr size_t SIMD_BYTES = 64;
     const auto * filt_and_aligned = filt_pos + size / SIMD_BYTES * SIMD_BYTES;
 }
+```
+#### ArrayFold 数学含义
+```sql
+SELECT arrayFold(x,acc -> acc + x * 2, [1,2,3,4], toInt64(3));
+```
+写成数学计算过程
+```c++
+acc = 3;
+
+for x in [1,2,3,4] do:
+    acc = acc + x * 2;
+
+return acc
 ```

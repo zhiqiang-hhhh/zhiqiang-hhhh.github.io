@@ -31,12 +31,32 @@ BlockIO InterpreterAlterQuery::execute()
 }
 ```
 各种 ALTET 类型具体包含哪些子关键字不详细列出，只列出一两个典型的：
-* `ALTER-ALTER`: `ADD_COLUMN`，`MODIFY_ORDER_BY`，...
-* `ALTER-PARTITION`:`DROP_PARTITION`，`FETCH_PARTITION` ...
-* `ALTER-MUTATION`:`DELETE`，`RENAME_COLUMN`，...
-* `ALTER-LIVEVIEW`:`REFRESH`
+* `ALTER`: `ADD_COLUMN`，`ADD_COLUMN`，`MODIFY_ORDER_BY`，...
+* `PARTITION`:`DROP_PARTITION`，`FETCH_PARTITION` ...
+* `MUTATION`:`DELETE`，`RENAME_COLUMN`，...
+* `LIVEVIEW`:`REFRESH`
 
-对不同类型的 ALTER 操作，后续执行的流程是不同的。比如对于 ALTER 操作，首先修改记录元数据的 .sql 文件，然后若是`MODIFY COLUMN`类型，则还会继续调用 MUTATION；对于 MUTATION 操作，真正执行是后台异步任务完成的，“前台”过程只是创建 MUTATION 任务相关信息。
+对不同类型的 ALTER 操作，后续执行的流程是不同的。比如对于 ALTER 操作，首先修改记录元数据的 .sql 文件，；对于 MUTATION 操作，真正执行是后台异步任务完成的，“前台”过程只是创建 MUTATION 任务相关信息。
+
+### StorageMergeTree::alter
+```c++
+BlockIO InterpreterAlterQuery::executeToTable(const ASTAlterQuery & alter)
+{
+    ...
+    if (!alter_commands.empty())
+    {
+        auto alter_lock = table->lockForAlter(getContext()->getSettingsRef().lock_acquire_timeout);
+        StorageInMemoryMetadata metadata = table->getInMemoryMetadata();
+        alter_commands.validate(metadata, getContext());
+        alter_commands.prepare(metadata);
+        table->checkAlterIsPossible(alter_commands, getContext());
+        table->alter(alter_commands, getContext(), alter_lock);
+    }
+
+    return res;
+}
+```
+
 ### StorageMergeTree::mutate
 ```c++
 InterperterAlterQuery::execute()

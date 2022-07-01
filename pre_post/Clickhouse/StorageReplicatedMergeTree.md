@@ -1,7 +1,4 @@
 [TOC]
-
-ReplicatedMergeTree 相比普通的 MergeTree 最大的区别在于添加了不同 Replica 之间的各种任务同步，所以本章基于 21.3 版本的代码对 ReplicatedMergeTree 的任务管理进行介绍。
-# 任务管理
 ## 整体流程
 
 以 INSERT INTO TABLE 为例先看一下 ReplicatedMergeTree 任务管理的整体流程

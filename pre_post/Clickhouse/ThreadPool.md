@@ -260,7 +260,7 @@ void BackgroundSchedulePool::threadFunction()
 
 注意，createTask 函数并不是立刻将 task 添加到 BgSchPool 的 queue 中。这里 createTask 可能更应该理解为是注册一个 task，所以后续将使用注册 task 来指代 createTask 函数。
 
-当使用者希望 Task 被执行时，通过 `BackgroundSchedulePoolTaskInfo::scheduleImpl()` 来将任务添加到 BgSchPool 的 queue 内：
+当使用者希望 Task 被执行时，通过 `BackgroundSchedulePoolTaskInfo::schedule()` 来将任务添加到 BgSchPool 的 queue 内：
 ```c++
 void BackgroundSchedulePoolTaskInfo::scheduleImpl(std::lock_guard<std::mutex> & schedule_mutex_lock)
 {
@@ -277,6 +277,61 @@ void BackgroundSchedulePoolTaskInfo::scheduleImpl(std::lock_guard<std::mutex> & 
 }
 ```
 添加完成后，如果有空闲的 background thread，那么它将会从 threadFunction 中被唤醒，执行 task。
+
+实际上执行的是 `BackgroundSchedulePoolTaskInfo::execute` 方法。
+```c++
+bool BackgroundSchedulePoolTaskInfo::schedule()
+{
+    std::lock_guard lock(schedule_mutex);
+
+    if (deactivated || scheduled)
+        return false;
+
+    scheduleImpl(lock);
+    return true;
+}
+
+void BackgroundSchedulePoolTaskInfo::execute()
+{
+    Stopwatch watch;
+    CurrentMetrics::Increment metric_increment{pool.tasks_metric};
+
+    std::lock_guard lock_exec(exec_mutex);
+
+    {
+        std::lock_guard lock_schedule(schedule_mutex);
+
+        if (deactivated)
+            return;
+
+        scheduled = false;
+        executing = true;
+    }
+
+    function();
+    UInt64 milliseconds = watch.elapsedMilliseconds();
+
+    /// If the task is executed longer than specified time, it will be logged.
+    static const int32_t slow_execution_threshold_ms = 200;
+
+    if (milliseconds >= slow_execution_threshold_ms)
+        LOG_TRACE(&Poco::Logger::get(log_name), "Execution took {} ms.", milliseconds);
+
+    {
+        std::lock_guard lock_schedule(schedule_mutex);
+
+        executing = false;
+
+        /// In case was scheduled while executing (including a scheduleAfter which expired) we schedule the task
+        /// on the queue. We don't call the function again here because this way all tasks
+        /// will have their chance to execute
+
+        if (scheduled)
+            pool.queue.enqueueNotification(new TaskNotification(shared_from_this()));
+    }
+}
+```
+
 
 #### BackgroundJobsAssignee
 * 任务注册
