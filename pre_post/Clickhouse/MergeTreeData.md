@@ -169,23 +169,51 @@ StorageMergeTree::write(const ASTPtr & /*query*/, const StorageMetadataPtr & met
 MergeTreeDataWriter::TemporaryPart MergeTreeDataWriter::writeTempPart(
     BlockWithPartition & block_with_partition, const StorageMetadataPtr & metadata_snapshot, ContextPtr context)
 {
+    ...
+
+    auto relative_path = TMP_PREFIX + part_name;
+    VolumePtr data_part_volume = createVolumeFromReservation(reservation, volume);
+
+    auto data_part_storage = std::make_shared<DataPartStorageOnDisk>(
+        data_part_volume,
+        data.relative_data_path,
+        relative_path);
+
+    auto data_part_storage_builder = std::make_shared<DataPartStorageBuilderOnDisk>(
+        data_part_volume,
+        data.relative_data_path,
+        relative_path);
+
     auto new_data_part = data.createPart(
         part_name,
         data.choosePartType(expected_size, block.rows()),
         new_part_info,
-        createVolumeFromReservation(reservation, volume),
-        TMP_PREFIX + part_name);
+        data_part_storage);
+    
     ...
+
+    SyncGuardPtr sync_guard;
     if (new_data_part->isStoredOnDisk())
     {
-        ...
-        const auto disk = new_data_part->volume->getDisk();
-        disk->createDirectories(full_path);
-        ...
+        /// The name could be non-unique in case of stale files from previous runs.
+        String full_path = new_data_part->data_part_storage->getFullPath();
+
+        if (new_data_part->data_part_storage->exists())
+        {
+            LOG_WARNING(log, "Removing old temporary directory {}", full_path);
+            data_part_storage_builder->removeRecursive();
+        }
+
+        data_part_storage_builder->createDirectories();
+
+        if (data.getSettings()->fsync_part_directory)
+        {
+            const auto disk = data_part_volume->getDisk();
+            sync_guard = disk->getDirectorySyncGuard(full_path);
+        }
     }
-    ...
-    auto finalizer = out->finalizePartAsync(new_data_part, data_settings->fsync_after_insert);
-    ...
+
+
 }
 ```
 
