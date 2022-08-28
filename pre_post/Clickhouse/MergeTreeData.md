@@ -163,15 +163,59 @@ StorageMergeTree::write(const ASTPtr & /*query*/, const StorageMetadataPtr & met
         *this, metadata_snapshot, settings.max_partitions_per_insert_block, local_context);
 }
 ```
+```c++
+/** Container for set of columns for bunch of rows in memory.
+  * This is unit of data processing.
+  * Also contains metadata - data types of columns and their names
+  *  (either original names from a table, or generated names during temporary calculations).
+  * Allows to insert, remove columns in arbitrary position, to change order of columns.
+  */
+
+class Block
+{
+private:
+    using Container = ColumnsWithTypeAndName;
+    using IndexByName = std::unordered_map<String, size_t>;
+
+    Container data;
+    IndexByName index_by_name;
+
+public:
+    BlockInfo info;
+
+}
+```
+
 
 
 ```c++
 MergeTreeDataWriter::TemporaryPart MergeTreeDataWriter::writeTempPart(
     BlockWithPartition & block_with_partition, const StorageMetadataPtr & metadata_snapshot, ContextPtr context)
 {
+    TemporaryPart temp_part;
+    Block & block = block_with_partition.block;
+
+    auto columns = metadata_snapshot->getColumns().getAllPhysical().filter(block.getNames());
+
     ...
 
-    auto relative_path = TMP_PREFIX + part_name;
+    Int64 temp_index = data.insert_increment.get();
+
+    auto minmax_idx = std::make_shared<IMergeTreeDataPart::MinMaxIndex>();
+    minmax_idx->update(block, data.getMinMaxColumnsNames(metadata_snapshot->getPartitionKey()));
+
+    MergeTreePartition partition(std::move(block_with_partition.partition));
+    MergeTreePartInfo new_part_info(partition.getID(metadata_snapshot->getPartitionKey().sample_block), temp_index, temp_index, 0);
+    String part_name = new_part_info.getPartName();
+
+    /// 按照排序键对block内的数据进行排序
+    if (metadata_snapshot->hasSortingKey() || metadata_snapshot->hasSecondaryIndices())
+        data.getSortingKeyAndSkipIndicesExpression(metadata_snapshot)->execute(block);
+
+    ...
+    /// 这里做了精简，忽略了 ttl 处理逻辑
+    ReservationPtr reservation = data.getStoragePolicy()->reserve(expected_size, min_volume_index);
+    VolumePtr volume = data.getStoragePolicy()->getVolume(0);
     VolumePtr data_part_volume = createVolumeFromReservation(reservation, volume);
 
     auto data_part_storage = std::make_shared<DataPartStorageOnDisk>(
@@ -190,30 +234,56 @@ MergeTreeDataWriter::TemporaryPart MergeTreeDataWriter::writeTempPart(
         new_part_info,
         data_part_storage);
     
-    ...
+    const auto & data_settings = data.getSettings();
 
-    SyncGuardPtr sync_guard;
-    if (new_data_part->isStoredOnDisk())
+    SerializationInfo::Settings settings{data_settings->ratio_of_defaults_for_sparse_serialization, true};
+    SerializationInfoByName infos(columns, settings);
+    infos.add(block);
+
+    new_data_part->setColumns(columns);
+    new_data_part->setSerializationInfos(infos);
+    new_data_part->rows_count = block.rows();
+    new_data_part->partition = std::move(partition);
+    new_data_part->minmax_idx = std::move(minmax_idx);
+    new_data_part->is_temp = true;
+    
+    /// The name could be non-unique in case of stale files from previous runs.
+    String full_path = new_data_part->data_part_storage->getFullPath();
+
+    if (new_data_part->data_part_storage->exists())
     {
-        /// The name could be non-unique in case of stale files from previous runs.
-        String full_path = new_data_part->data_part_storage->getFullPath();
-
-        if (new_data_part->data_part_storage->exists())
-        {
-            LOG_WARNING(log, "Removing old temporary directory {}", full_path);
-            data_part_storage_builder->removeRecursive();
-        }
-
-        data_part_storage_builder->createDirectories();
-
-        if (data.getSettings()->fsync_part_directory)
-        {
-            const auto disk = data_part_volume->getDisk();
-            sync_guard = disk->getDirectorySyncGuard(full_path);
-        }
+        LOG_WARNING(log, "Removing old temporary directory {}", full_path);
+        data_part_storage_builder->removeRecursive();
     }
 
+    data_part_storage_builder->createDirectories();
 
+    if (data.getSettings()->fsync_part_directory)
+    {
+        const auto disk = data_part_volume->getDisk();
+        sync_guard = disk->getDirectorySyncGuard(full_path);
+    }
+    
+    ...
+
+    const auto & index_factory = MergeTreeIndexFactory::instance();
+    auto out = std::make_unique<MergedBlockOutputStream>(new_data_part, data_part_storage_builder, metadata_snapshot, columns,
+        index_factory.getMany(metadata_snapshot->getSecondaryIndices()), compression_codec,
+        context->getCurrentTransaction(), false, false, context->getWriteSettings());
+
+    out->writeWithPermutation(block, perm_ptr);
+
+    auto finalizer = out->finalizePartAsync(
+        new_data_part,
+        data_settings->fsync_after_insert,
+        nullptr, nullptr,
+        context->getWriteSettings());
+
+    temp_part.part = new_data_part;
+    temp_part.builder = data_part_storage_builder;
+    temp_part.streams.emplace_back(TemporaryPart::Stream{.stream = std::move(out), .finalizer = std::move(finalizer)});
+
+    return temp_part;
 }
 ```
 
