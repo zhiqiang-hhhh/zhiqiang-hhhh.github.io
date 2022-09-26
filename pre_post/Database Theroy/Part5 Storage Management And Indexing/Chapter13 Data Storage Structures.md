@@ -18,7 +18,7 @@
 2. Cost of tuple deletion and update.
 3. Cost of decompression. 
 
-To allow skipping of attribute values from such records, compressed representations for column stores allow decompression to start at any of a number of points in the file, skipping earlier parts of the file.
+To allow skipping of attribute values from such records, compressed representations for column stores allow decompression to start at any of a number of points in the file, skipping earlier parts of the file. 通常的做法是，对每 10000 条记录进行压缩，并且记录这每组记录的开头位置。
 
 ORC 和 Parquet 都是在大数据处理系统里常用的列存文件格式。
 
