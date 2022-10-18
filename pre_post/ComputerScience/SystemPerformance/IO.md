@@ -1,7 +1,7 @@
 ## Linux IO Stack
 
 <center>
-<img alt="picture 1" src="../../../images/19e400beaa6f0ef6f3d2abe0f793e26f4debacc32d2b56de12e123aadb8104ba.png" height="800px" width="600px"/>  
+<img alt="picture 1" src="../../../images/19e400beaa6f0ef6f3d2abe0f793e26f4debacc32d2b56de12e123aadb8104ba.png"/>  
 </center>
 
 上图左上角 LIO 是指 Linux 内核中的一个模块，用于模拟块设备。整个 Linux IO Stack 从上往下可以分为四层：
