@@ -1,3 +1,7 @@
+* 2022/10/19
+  折腾了一天 thrift demo ，终于编译完成了 thrift server。
+  明天目标：thrift echo client， cgo 调用 thrift client。
+
 
 * 2022/10/18
 
