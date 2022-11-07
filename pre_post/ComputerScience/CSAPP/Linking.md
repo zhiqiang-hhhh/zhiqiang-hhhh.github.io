@@ -3,7 +3,7 @@
 什么是链接：Linking is a process of collecting and combining various pieces of code and data into a single file that can be loaded (copied) into memory and executed.
 更加朴素的说法，链接是将输入的一组代码和数据的集合重新整理成一个文件，该文件可以被加载进内存并且运行。
 
-为了规范描述，我们这里将链接器的输入文件称为可重定位目标文件，将链接器的输出文件称为可执行目标文件，有时会忽略两者的目标二字。
+为了规范描述，我们这里将链接器的输入文件称为可重定位目标文件(relocatable object fiels)，将链接器的输出文件称为可执行目标文件，有时会忽略两者的目标二字。
 
 链接器为了得到一个可执行文件，需要完成两个主要任务：
 1. Symbol resolution（符号解析）
