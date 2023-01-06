@@ -15,30 +15,44 @@ offset: [4,8,10]
 ```c++
 StringRef ColumnArray::getDataAt(size_t n) const
 {
+    assert(n < size());
+
     /** Returns the range of memory that covers all elements of the array.
       * Works for arrays of fixed length values.
-      * For arrays of strings and arrays of arrays, the resulting chunk of memory may not be one-to-one correspondence with the elements,
-      *  since it contains only the data laid in succession, but not the offsets.
       */
 
-    size_t offset_of_first_elem = offsetAt(n);
-    StringRef first = getData().getDataAtWithTerminatingZero(offset_of_first_elem);
+    /// We are using pointer arithmetic on the addresses of the array elements.
+    if (!data->isFixedAndContiguous())
+        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Method getDataAt is not supported for {}", getName());
 
     size_t array_size = sizeAt(n);
     if (array_size == 0)
-        return StringRef(first.data, 0);
+        return StringRef(nullptr, 0);
 
-    size_t offset_of_last_elem = getOffsets()[n] - 1;
-    StringRef last = getData().getDataAtWithTerminatingZero(offset_of_last_elem);
+    size_t offset_of_first_elem = offsetAt(n);
+    StringRef first = getData().getDataAt(offset_of_first_elem);
 
-    return StringRef(first.data, last.data + last.size - first.data);
+    return StringRef(first.data, first.size * array_size);
 }
-```
-`offsetAt(n)`的计算利用了 PODArray 的一个特性：在 -1 的位置填充默认值，对于 ColumeOffset 这个默认值为 0。
-```c++
 size_t ALWAYS_INLINE offsetAt(ssize_t i) const { return getOffsets()[i - 1]; }
+size_t ALWAYS_INLINE sizeAt(ssize_t i) const { return getOffsets()[i] - getOffsets()[i - 1]; }
 ```
-所以这里 `offsetAt(0) == getOffsets()[-1]`，结果为 0。
+`offsetAt(n)`的计算利用了 PODArray 的一个特性：在 -1 的位置填充默认值，对于 ColumeOffset 这个默认值为 0。所以`sizeAt(0)`的结果就是`4-0=4`。
+
+```c++
+
+```
+所以当我们想要获取第一个数组的起始offset时，`offsetAt(0) == getOffsets()[-1]`，结果为 0。
+
+
+
+
+对前面的ColumnArray每个元素执行一次`getDataAt`将会对应下面的结果：
+```txt
+get
+```
+
+
 
 
 
