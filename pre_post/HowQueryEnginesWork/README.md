@@ -1,3 +1,5 @@
+[TOC]
+
 # Apache Arrow
 Apache Arrow 开创了一种对列存数据的内存中的统一表示格式。这种内存格式可以被高效地用于在支持SIMD的CPU上进行数据的向量化处理。
 标准化的内存数据格式的好处：
@@ -36,10 +38,12 @@ Query engine 是一行一行地处理数据还是列式处理数据。现今很�
   Optimized Row Columnar (ORC) 格式与 Parquet 文件类似。数据以 columnar batch 为单位保存，每个存储单位称为 stripes
 
 # Logical Plans & Expressions
-## Printing Logical Plans
-## Serialization
+
+A logical plan represents a relation (a set of tuples) with a known schema.
+
 ## Logical Expressions
-Expression that can be evaluated against data at runtime.
+
+构成一个logical plan的最重要的基本组件是 logical expression。一些 logical expression的例子：
 |Expression|Examples|
 |--|--|
 |Literal Value|"hello", 12.34|
@@ -51,19 +55,141 @@ Expression that can be evaluated against data at runtime.
 |Scalar Function|CONCAT(first_name, "", last_name)|
 |Aliased Expression|salary * 0.02 AS pay_increase|
 
-When we are planning queries we will need to know some basic meta-data about the output of an expression. Specifically we need to have a name for the expression so that other expressions can
-reference it and we need to know the data type of the values that the expression will produce when evaluated so that we can validate that the query plan is valid.
-
-## Column Expressions
-## Literal Expressions
-## Binary Expressions
-## Comparison Expressions
-## Boolean Expressions
-## Math Expressions
+对于一个 logical expression 来说，它必须具备以下的属性：
+1. name，这样其他的 expression 才能引用它；
+2. data type of the values that the expression will produce when evaluated.
 
 
-## Aggregate Expressions
+When we are planning queries we will need to know some basic meta-data about the output of an expression. Specifically we need to have a name for the expression so that other expressions can reference it and we need to know the data type of the values that the expression will produce when evaluated so that we can validate that the query plan is valid.
+
+### Column Expressions
+
+column expression：简单来说可以理解为访问某个列。但是，这里的“列”不光可以指 column in a data source，也可以指 a column produced by the input logical plan or it could represent the result of an expression being evaluated against other inputs.
+
+
+### Literal Expressions
+字面值表达式。
+
+### Binary Expressions
+ Expressions that take two inputs. 包括有：comparision expression, boolean expressions and math expressions. 
+
+#### Comparison Expressions
+#### Boolean Expressions
+#### Math Expressions
+
+### Aggregate Expressions
 Aggregate expressions perform an aggregate function such as MIN, MAX, COUNT, SUM, or AVG on an input expression.
-## Logical Plans
-## Scan
+
+
+### Logical Plans
+#### Scan
 The Scan logical plan represents fetching data from a DataSource with an optional projection. Scan is the only logical plan in our query engine that does not have another logical plan as an input. It is a leaf node in the query tree.
+
+#### Projection 
+A projection is a list of expressions to be evaluated against the input data. 
+```sql
+# simple
+SELECT a, b, c from foo
+
+# complex
+SELECT (CAST(a AS folat) * 3.1415926) AS my_float FROM foo
+```
+
+#### Selection
+Apply a filter expression to detemine which rows should be selected in its output. 对应 sql 中的 where 子句
+
+#### Aggregate
+
+# Building Logical Plans
+执行如下 sql，数据源是一个 CSV 文件，其中包含如下列：id, first_name, last_name, state, job_title, salary.
+```sql
+SELECT * FROM employee WHERE state = 'CO'
+```
+一种方式是，我们直接针对该sql写代码，构造一个logical plan：
+```
+val plan = Projection(
+  Selection(
+  Scan("employee", CsvDataSource("employee.csv"), listOf()),
+  Eq(Column(3), LiteralString("CO"))
+  ),
+  listOf(Column("id"),
+  Column("first_name"),
+  Column("last_name"),
+  Column("state"),
+  Column("salary"))
+)
+println(format(plan))
+```
+不便于理解。
+
+better：data frames
+
+# Physical Plans & Expressions
+```kotlin
+interface Expression {
+  func evaluate(input: RecordBatch) : ColumnVector
+}
+```
+## Comlumn Expression
+```kotlin
+class ColumnExpression(val i : Int) : Expression {
+  override fun evaluate(input: RecordBatch): ColumnVector {
+    return input.field(i)
+  }
+
+  override fun toString(): String {
+    return "#$i"
+  }
+}
+```
+
+### Aggregate Expressions
+Complex.
+
+Aggregate values from multiple batches of data and then produce final value.
+```kotlin
+interface AggregateExpression {
+  fun inputExpression() : Expression
+  fun createAccumulator : Accumulator
+}
+
+interface Accumulator {
+  fun accumulate(value : Any?)
+  fun finalValue() : Any?
+}
+
+class MaxExpression(private val expr : Expression) : AggregateExpression {
+  override fun inputExpression() : Expression {
+    return expr
+  }
+
+  override func createAccumulator() : Accumulator {
+    return MaxAccumulator()
+  }
+
+  override fun toString() : String {
+    return "MAX($expr)"
+  }
+}
+
+clas MaxAccumulator : Accumulator {
+  var value: Any? = null
+
+  override fun accumulate(value: Any?) {
+    if (value != null) {
+      if (this.value == null) {
+        this.value = value
+      } else {
+        val isMax = when(value) {
+          is Byte -> value > this.value as Byte
+          is Shot -> value > this.value as Short
+          is Int -> value > this.value as Int
+          is Long -> value > this.value as Long
+          
+        }
+      }
+    }
+  }
+}
+
+```
