@@ -442,6 +442,7 @@ void Solution::quickSort(vector<int>&nums, vector<int>::iterator begin, vector<i
     quickSort(nums, begin, key_pos);
     quickSort(nums, key_pos + 1, end);
 }
+
 vector<int>::iterator Solution::partition(vector<int>&nums, vector<int>::iterator begin, vector<int>::iterator end){
     auto i = begin - 1;
     int key = *(end - 1);
