@@ -62,12 +62,12 @@ TSL: Test and Set Lock 指令。从内存读取LOCK变量到寄存器RX，然后
 这里实际上我们是对前述的Lock Variable方案做了加强，引入了不可分割的指令完成READ COMPARE SET操作。实际使用时，我们创建一个可以用TSL指令访问的lock variable，初始值为0，任何想要进入临界区的进程都需要通过TSL将其设置为1，在离开临界区之后，通过简单的MOVE指令将其设置为0。
 
 下图展示了如何使用TSL实现进程间的互斥，p0通过 TSL 将内存中的 LOCK 变量设置为 1，如果 LOCK 本来就为 1，那么说明有其他进程已经“加锁”成功了，那么p0就会回到 enter_region 入口继续 TSL，否则说明 p0 加锁成功，p0 可以进入临界区，在离开时，通过普通的 move 指令将内存中的 LOCK 变量设置为 0，让其他进程可以加锁。
-<img alt="picture 3" src="../images/e7181fd725f8a0fd160ffbca1e1da97400346c751514735b1cf7cc4be1636512.png" />  
+<img alt="picture 3" src="../../../images/e7181fd725f8a0fd160ffbca1e1da97400346c751514735b1cf7cc4be1636512.png" />  
 
 
 TSL 指令的另一个替代方案是 XCHG 指令，该指令可以原子性地交换两个地址的内容，这个地址既可以指向寄存器也可以是主存。所有的 x86 CPU 都使用 XCHG 来实现 low-level synchronization.
 
-<img alt="picture 4" src="../images/739298204393e7e4a02f7b3b3c71050833f57c8d327cfd27e3a4a4a7c9e576fe.png" />  
+<img alt="picture 4" src="./../../../images/739298204393e7e4a02f7b3b3c71050833f57c8d327cfd27e3a4a4a7c9e576fe.png" />  
 
 ### Sleep and Wakeup
 TSL 方案实际上是一种 busy waiting 的方案，除了会导致CPU的占用外，还会有其他问题。进程 H 具有更高的调度优先级，进程 L 具有较低的调度优先级。假如调度规则是，只要 H 在 ready 状态，那么它一定可以立刻被执行。那么，如果在某个时刻，L 进入了临界区，H 变为 ready，那么 L 将会在某个中断时刻被强制换出，后续 H 将会永远 busy waiting，因为 L 永远得不到机会离开临界区，move lock to 0。这种情景被称为优先级反转。
@@ -81,7 +81,7 @@ Also known as bounded-buffer problem.
 
 当我们引入 count 这个变量之后，解决了队列的同步，但是对 count 变量本身的访问依然有 race condition。例子也很好举出来，count 被进程 A 读到自己的寄存器里，在写回去之前发生进程切换，进程 B 读到的 count 就与 A 不一致了。**假设，我们通过对 count 设置由 TSL 或者 XCHG 实现的 lock variable 进行保护，确保了任何时刻只有一个进程访问 count，则依然还会有 race conditiion**
 
-<img alt="picture 1" src="../images/245e71cac96c538024b4f05f5525a439ae93478f2f97af7510f5eb2e10be6858.png" />  
+<img alt="picture 1" src="../../../images/245e71cac96c538024b4f05f5525a439ae93478f2f97af7510f5eb2e10be6858.png" />  
 
 比如上述代码中，对于 count 变量本身的访问已经做到了互斥，但是我们依然可能遇到如下情景：
 初始队列为空，consumer 刚刚将 read 读进自己的寄存器，**正要准备sleep，但是还未sleep**，此时调度器决定让 producer 执行，producer 插入新的 item，然后想要 wakeup consumer。但是此时由于 consumer 并未 sleep，所以这个 wakeup 信号会被丢失。调度器下一步决定让 consumer 继续之前的状态执行，那么 consumer 根据自己之前得到的 count == 0 决定让自己 sleep。后续 producer 将会一直 insert_item，直到队列满，producer 和 consumer 都将会永远 sleep。
@@ -96,7 +96,7 @@ up 操作对应`++count; if(count == 1) wakeup();`，**up 操作不会导致进�
 **Solving the Producer-Consumer Problem Using Semaphores**
 在实现 semaphore 变量的时候，我们需要操作系统提供 down 操作与 up 操作的接口。通过这两个接口，我们可以保证在执行 `if(count == 0) sleep(); else --count;` 期间，中断关闭，不会有进程调度发生，同时在多核情况下，我们还需要为每个 semaphore 设置由 TSL/XCHG 实现的 lock variable。
 
-<img alt="picture 2" src="../images/bd37b37edfff01916b340dd1c64dc50f7cf3a816ddfd8bac2fb80a0bbc9943a9.png" />  
+<img alt="picture 2" src="../../../images/bd37b37edfff01916b340dd1c64dc50f7cf3a816ddfd8bac2fb80a0bbc9943a9.png" />  
 
 上图的算法过程包含三个 semaphores：
 - full 用来记录队列中有多少个item
@@ -138,7 +138,7 @@ void consumer(void)
 ### Mutex
 信号量 semaphore 的一个特性是计数，当不需要进行同步，只需要实现互斥时，其就是一个简单版的 semaphore，称为 mutex。
 
-<img alt="picture 1" src="../images/6bdb71e65c1660a4b18884e5571114bece9952a2bdbce9a9ea6b69de6a417ef7.png" />  
+<img alt="picture 1" src="../../../images/6bdb71e65c1660a4b18884e5571114bece9952a2bdbce9a9ea6b69de6a417ef7.png" />  
 
 这里通过 TSL 就可以实现互斥，不过 TSL 不会导致进程阻塞，因此我们只需要将 busy waiting 的逻辑改为执行`CALL thread_yeild`，让调度器选择下一个能够执行的进程。
 
