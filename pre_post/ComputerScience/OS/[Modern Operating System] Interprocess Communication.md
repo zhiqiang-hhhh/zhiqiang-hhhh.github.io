@@ -14,7 +14,7 @@
 
 以一个经典的打印机模型开启讨论：当进程 A 想要打印某个文件时，进程 A 将 file name 输入到一个特殊的 spooler directory，另一个进程 printer daemon，周期性地检查该目录，并且将任何出现的 file 打印出来
 
-<img alt="picture 1" src="../images/f21025d74b3dd7c19766a12fe07121a63616cd42013615a168d7644aa9dac8a0.png" />  
+<img alt="picture 1" src="../../../images/f21025d74b3dd7c19766a12fe07121a63616cd42013615a168d7644aa9dac8a0.png" />  
 
 两个共享变量，out 指向下一个可被打印的文件 slot number，in 指向下一个 free slot number，共享变量被所有的进程共享。观察图 2-21 中的情景，此时进程 A 与进程 B 均想要打印某个文件。那么我们就可能面临如下的一个场景：进程 A 读 in 然后 store 到自己的局部变量 next_free_slot 中，此时为 7。就在这时，一个时钟中断发生，然后OS决定将进程 A 调度出去，要让进程 B 执行，那么进程 B 同样会得到 in 值为 7。后续会发生的事情我们可以预见到：进程 B 写进 slot 7 的 file name 将会被最后执行的进程 A 覆盖，进程 B 永远得不到它想要的打印结果。这种情景就叫做 race condition
 
