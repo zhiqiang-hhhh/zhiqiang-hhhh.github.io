@@ -17,4 +17,10 @@ target_link_options(main PUBLIC -Wl,--trace-symbol=main -Wl,--trace-symbol=FuncB
 ```
 链接器生成可执行文件时进行无用符号删除操作的粒度是编译单元，即可重定位目标文件。如果某个 .cc 中的符号没有被外部引用，那么这整个 .cc 将不会出现在最终的可执行目标文件中。
 
-https://csstormq.github.io/blog/%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E7%AF%87%E4%B9%8B%E9%93%BE%E6%8E%A5%EF%BC%884%EF%BC%89%EF%BC%9A%E7%AC%A6%E5%8F%B7%E8%A7%A3%E6%9E%90#jump%E9%AA%8C%E8%AF%81%E8%BF%87%E7%A8%8B6
+----
+
+如果 library foo 对外暴露的头文件中用到了 library bar 的头文件，那么 library foo 的 CMakeLists 中一定需要把 library bar 的 link 可见性设置为 PUBLIC，
+```
+target_link_library(foo PUBLIC bar)
+```
+---
