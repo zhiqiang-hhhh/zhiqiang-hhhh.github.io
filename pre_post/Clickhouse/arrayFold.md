@@ -1,3 +1,20 @@
+[TOC]
+
+### ArrayFold
+```sql
+SELECT arrayFold(x, acc -> acc + x * 2, [1,2,3,4], toInt64(3));
+```
+写成数学计算过程
+```c++
+acc = 3;
+
+for x in [1,2,3,4] do:
+    acc = acc + x * 2;
+
+return acc
+```
+
+
 ### Array 的内存表示
 
 array 类型对应的内存中的类型为 ColumnArray，该类型包含两个数组，一个 data 数组顺序保存该所有的 element，这个数组是连续的，另一个 offset 数组保存每个 array 在 ColumnArray 中的起始位置，以下面的 sql 为例，
@@ -251,9 +268,9 @@ void ActionsMatcher::visit(const ASTFunction & node, const ASTPtr & ast, Data & 
     ...
     auto lambda_actions = std::make_shared<ExpressionActions>(
                         lambda_dag,
-                        ExpressionActionsSettings::fromContext(
+                        ExpressionActionsSettings::fromContext());
+    }
 }
-
 ```
 当 InterperterSelectQuery 对象构造完毕后，Logical plan 也就构造好了，下一步是构造物理执行计划，这一步是在 `InterpreterSelectQuery::execute()` 中完成的
 ```c++
@@ -317,6 +334,10 @@ static void executeAction(const ExpressionActions::Action & action, ExecutionCon
 ```
 ----
 来看一下 arrayMap 具体是如何执行的：
+```shell
+select arrayMap(x -> (x + 2), arr) from arrayTest;
+```
+
 ```c++
 ColumnPtr executeImpl(
     const ColumnsWithTypeAndName & arguments, 
@@ -345,12 +366,36 @@ ColumnPtr executeImpl(
         ColumnPtr column_array_ptr = array_with_type_and_name.column;
         const auto * column_array = checkAndGetColumn<ColumnArray>(column_array_ptr.get());
 
+        const DataTypePtr & array_type_ptr = array_with_type_and_name.type;
+        const auto * array_type = checkAndGetDataType<typename Impl::data_type>(array_type_ptr.get());
 
+        if (!column_array)
+            ...
+        if (!array_type)
+            ...
+        ...
+        /// C 把所有后续需要进行计算的列添加到 arrays 中
+        arrays.emplace_back(ColumnWithTypeAndName(
+            column_array->getDataPtr(),
+            recursiveRemoveLowCardinality(array_type->getNestedType()),
+            array_with_type_and_name.name));
     }
+
+    auto replicated_column_function_ptr = IColum::mutate(column_function->replicate(getOffsets(*column_first_array)));
+    
+    ...
+    return Impl::execute(*column_first_array, lambda_result.column);
 }
 ```
 * A
 这里说明，物理查询计划执行时，第一个参数为我们需要执行的 function。TODO：在哪构造的这个 ColumnFunction 对象
+* B
+预先进行所有array列的合法性校验，确保所有的列都是array
+* C
+把所有后续需要进行计算的列添加到 arrays 中
+* D 
+进行真正的运算
+
 
 
 
@@ -470,17 +515,4 @@ void filterArraysImplGeneric(
     static constexpr size_t SIMD_BYTES = 64;
     const auto * filt_and_aligned = filt_pos + size / SIMD_BYTES * SIMD_BYTES;
 }
-```
-#### ArrayFold 数学含义
-```sql
-SELECT arrayFold(x,acc -> acc + x * 2, [1,2,3,4], toInt64(3));
-```
-写成数学计算过程
-```c++
-acc = 3;
-
-for x in [1,2,3,4] do:
-    acc = acc + x * 2;
-
-return acc
 ```
