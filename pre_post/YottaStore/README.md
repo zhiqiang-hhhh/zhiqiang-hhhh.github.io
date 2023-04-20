@@ -25,3 +25,129 @@ struct Cluster {
 map<ClusterId, Cluster>
 
 #### NodeManager
+
+```plantuml
+@startuml
+class DeployNode {
+    + node_id : NodeId
+    + endpoint : Endpoint
+    + deploy_path : DeployPath
+    + deploy_status : DeployStatus
+    + total_size : int64
+    + used_size : int64
+    + disk_statistic_map : map<disk.DiskTag, i64>
+    + service_status : ServiceStatus
+    + node_meta : map<string, string> # user define
+}
+
+class AvailabilityZone {
+    + az_name : string
+    + mz_map : map<int8, ManagementZone>
+    + total_size : int64
+    + used_size : int64
+    + disk_statistic_map : map<disk.DiskTag, i64>
+}
+
+DeployTree *-- AvailabilityZone
+
+class ManagementZone {
+    + mz_id : int8
+    + node_map : map<NodeId, DeployNode>
+    + total_size : int64
+    + used_size : int64
+    + disk_statistic_map : map<disk.DiskTag, i64>
+}
+
+AvailabilityZone *--  ManagementZone
+ManagementZone *--  DeployNode 
+
+class DeployTree {
+    + deploy_tree_id : string
+    + module_id : ModuleId
+    + description : string
+    + region : string
+    + az_map : map<string, AvailabilityZone>
+    + total_size : int64
+    + used_size : int64
+    + disk_statistic_map : map<disk.DiskTag, i64>
+}
+
+@enduml
+
+```
+#### Cayman
+一致性哈希。保存 slot -> nodeid 的映射。
+
+
+#### NodeMonitor&Audiene
+Overall：NodeMonitor 这套服务用于向集群中的各个节点推送其订阅的信息。
+
+对于每个需要接收信息推送的进程，其需要完成两个步骤：
+1. 在 NodeMonitor 中注册自己，记录自己需要订阅哪些类型的事件
+2. 启动 NodeMonitorClient（本质是一个 service），用于接收事件推送。
+
+NodeMonitorClient的协议:
+```thrift
+service NodeMonitorClientService {
+    PushEventsResponse PushEvents(1: PushEventsRequest request);
+    PushDiskEventsResponse PushDiskEvents(1: PushDiskEventsRequest request);
+    PushEventGroupsResponse PushEventGroups(1: PushEventGroupsRequest request);
+}
+
+struct PushEventsRequest {
+  1: list<event.Event> events;
+}
+
+struct Event {
+  1: node.NodeId target;
+  2: EventName event_name;
+  3: monitor_info.MonitorInfo monitor_info;
+}
+
+struct MonitorInfo {
+  1: HealthInfo health_info;
+  2: BlackInfo black_info;
+  3: BackgroundInfo bg_info;
+  4: DiskIoStats disk_io_stats;
+}
+```
+NodeMonitor的协议：
+```thrift
+service NodeMonitorService {
+  UpdateHealthInfosResponse UpdateHealthInfos(1:UpdateHealthInfosRequest request);
+  BlackNodesResponse BlackNodes(1:BlackNodesRequest request);
+  UnblackNodesResponse UnblackNodes(1:UnblackNodesRequest request);
+  ListBlackNodesResponse ListBlackNodes(1:ListBlackNodesRequest request);
+  ListMonitorInfosResponse ListMonitorInfos(1:ListMonitorInfosRequest request);
+  GetMonitorInfoResponse GetMonitorInfo(1:GetMonitorInfoRequest request);
+
+  // Disk BG/FG
+  BackgroundNodeDisksResponse BackgroundNodeDisks(1:BackgroundNodeDisksRequest request);
+  ForegroundNodeDisksResponse ForegroundNodeDisks(1:ForegroundNodeDisksRequest request);
+  ListBackgroundNodeDisksResponse ListBackgroundNodeDisks();
+
+  // Notify
+  NotifyResponse Notify(1: NotifyRequest request);
+
+  //OnRestart
+  OnRestartResponse OnRestart(1: OnRestartRequest request);
+
+  // Sync DeployTree/LocationTree
+  NotifyDeployTreeChangeResponse NotifyDeployTreeChange(1:NotifyDeployTreeChangeRequest request);
+  RetryNotifyDeployTreeChangeResponse RetryNotifyDeployTreeChange(1:RetryNotifyDeployTreeChangeRequest request);
+
+  NotifyLocationTreeChangeResponse NotifyLocationTreeChange();
+  RetryNotifyLocationTreeChangeResponse RetryNotifyLocationTreeChange(1:RetryNotifyLocationTreeChangeRequest request);
+}
+```
+HearBeat 负责调用 NodeMonitorService 的接口，推送事件到 NodeMonitor，然后由 NodeMonitor 推送这些事件到订阅这些事件的 NodeMonitorClient
+
+* Audience
+
+```thrift
+namespace AUDIENCE {
+class MsgHandler {
+    virtual std::tuple<int, std::string> HandleMsg(int msg_type, int msg_id, const std::string& content) = 0;
+}
+}
+```
