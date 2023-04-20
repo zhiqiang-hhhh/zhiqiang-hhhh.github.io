@@ -28,7 +28,7 @@ insert into table arrayTest values (1, [1,2,3,4]),(2,[5,6,7,8]),(3,[9,10])
 data:   [1,2,3,4,2,3,4,5,3,4]
 offset: [4,8,10]
 ```
-观察 `ColumnArray::getDataAt(size_t n)` 的实现更好的理解：
+观察 `ColumnArray::getDataAt(size_t n)` 的实现以更好的理解：
 ```c++
 StringRef ColumnArray::getDataAt(size_t n) const
 {
@@ -381,7 +381,11 @@ ColumnPtr executeImpl(
             array_with_type_and_name.name));
     }
 
-    auto replicated_column_function_ptr = IColum::mutate(column_function->replicate(getOffsets(*column_first_array)));
+    /// D 参数对齐 + lambda 表达式运算
+    auto replicated_column_function_ptr = IColumn::mutate(column_function->replicate(getOffsets(*column_first_array)));
+    auto * replicated_column_function = typeid_cast<ColumnFunction *>(replicated_column_function_ptr.get());
+    replicated_column_function->appendArguments(arrays);
+    auto lambda_result = replicated_column_function->reduce();
     
     ...
     return Impl::execute(*column_first_array, lambda_result.column);
@@ -394,24 +398,65 @@ ColumnPtr executeImpl(
 * C
 把所有后续需要进行计算的列添加到 arrays 中
 * D 
-进行真正的运算
+进行**参数对齐**，并且对lambda函数进行运算。
+
+#### 参数对齐
+对于我们的demo，arr 列为
+```
+[1,2,3,4]
+[5,6,7,8]
+[9,10]
+```
+对于 `x -> (x + 2)`，要完成的计算过程类似对下面的一张表进行运算
+```
+2   [1,2,3,4]
+2   [5,6,7,8]
+2   [9,10]
+```
+如果是暴力写法，我们只需要两个 for 循环，累计 10 次执行lambda函数
+```
+for (arr : arrays) {
+    for (item : arr) {
+        res = lambda(2, item)
+    }
+}
+```
+现在为了利用SIMD指令，我们需要执行一个“对齐”操作，将所有的数据在内存中重新匹配排列一把如下
+```
+2   1
+2   2
+2   3
+2   4
+2   5
+2   6
+2   7
+2   8
+2   9
+2   10
+```
+这样子我们就构造了两个向量，执行一次lambda函数`res = lambda_vec(vec1, vec2)`。arr 列刚被加载到内存中时就是向量排列，ColumnConst本身也是向量排列，但是由于我们的另一个列是array，其张开后的行数与ColumnConst不一致，因此需要对ColumnConst列进行复制
+```cpp
+ColumnFunction::replicate(const Offsets & offset) const
+{
+    ...
+
+    /// A 进行 column 的复制
+    ColumnsWithTypeAndName capture = captured_columns;
+    for (auto & column : capture)
+        column.column = column.column->replicate(offsets);
+
+    size_t replicated_size = 0 == elements_size ? 0 : offsets.back();
+    return ColumnFunction::create(replicated_size, function, capture, is_short_circuit_argument, is_function_compiled);
+}
+```
+* A
+对于 x -> (x + 2) 这个lambda函数来说，captured_columns 就是一个 ColumnConst，ColumnConst 进行 replicate 之后，原先的 3 行 ColumnConst 就变为了 4 + 4 + 2 行。
+
 
 
 
 
 --- 
-### ColumnFunction
-```plantuml
-
-IColumn <|-- ColumnFunction
-
-class ColumnFunction 
-{
-    - size_t : size_t
-    - function : FunctionBasePtr
-    - captured_columns : ColumnsWithTypeAndName
-}
-``` 
 
 ---- 
 ```sql

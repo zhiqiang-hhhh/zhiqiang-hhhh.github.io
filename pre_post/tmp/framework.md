@@ -115,3 +115,51 @@ class CommonService : public thrift::CommonServiceIf {
 
 }
 ```
+
+
+### Cpp 全局对象
+全局或静态对象当且仅当对象首次用到时才进行构造，并通过atexit()来管理对象的生命期，在程序结束之后（如调用exit，main），按FILO顺序调用相应的析构操作！
+
+
+
+### Server
+```cpp
+namespace COMMON
+{
+template<typename ThriftServerType>
+class ThriftServerT : public Server {
+ public:
+  ThriftServerT() {}
+  ThriftServerT(const ThriftServerConfig& config) : config_(config) {}
+  virtual ~ThriftServerT() {}
+
+  virtual int Init();
+  virtual int RegisterService(ServicePtr service);
+  virtual int Start();
+  virtual int Join();
+  virtual int Stop();
+  virtual int PendingTaskCount();
+  virtual int RunningWorkerCount();
+
+  typedef std::unique_ptr<ThriftServerType> ThriftServerTypePtr;
+...
+  std::string default_service_{""};
+  std::vector<ThriftServicePtr> services_{};
+  std::unique_ptr<ThriftServerType> server_;
+};
+
+using NonblockingThriftServer = ThriftServerT<apache::thrift::server::TNonblockingServer>;
+using NonblockingThriftServerPtr = std::shared_ptr<NonblockingThriftServer>;
+
+using ThreadPoolThriftServer = ThriftServerT<apache::thrift::server::TThreadPoolServer>;
+using ThreadPoolThriftServerPtr = std::shared_ptr<ThreadPoolThriftServer>;
+
+// Adapt to exist code
+using ThriftServer = NonblockingThriftServer;
+using ThriftServerPtr = NonblockingThriftServerPtr;
+
+};
+```
+
+====
+
