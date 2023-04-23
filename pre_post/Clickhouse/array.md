@@ -1,19 +1,7 @@
 [TOC]
 
-### ArrayFold
-```sql
-SELECT arrayFold(x, acc -> acc + x * 2, [1,2,3,4], toInt64(3));
-```
-写成数学计算过程
-```c++
-acc = 3;
 
-for x in [1,2,3,4] do:
-    acc = acc + x * 2;
-
-return acc
-```
-
+## Clickhouse Array
 
 ### Array 的内存表示
 
@@ -560,4 +548,18 @@ void filterArraysImplGeneric(
     static constexpr size_t SIMD_BYTES = 64;
     const auto * filt_and_aligned = filt_pos + size / SIMD_BYTES * SIMD_BYTES;
 }
+```
+
+### ArrayFold
+```sql
+SELECT arrayFold(x, acc -> acc + x * 2, [1,2,3,4], toInt64(3));
+```
+写成数学计算过程
+```c++
+acc = 3;
+
+for x in [1,2,3,4] do:
+    acc = acc + x * 2;
+
+return acc
 ```
