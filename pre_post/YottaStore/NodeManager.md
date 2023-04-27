@@ -55,7 +55,7 @@ class DeployTree {
 @enduml
 
 ```
-nmc 启动时同 nms 获取deploy tree
+nmc 启动时从 nms 获取deploy tree
 ```cpp
 int NodeManagerClientCache::PullModule(MODEL::ModuleId::type module_id) {
     /// A. 根据 module id 获取 deploy tree id
@@ -83,4 +83,44 @@ int NodeManagerClientCache::PullModule(MODEL::ModuleId::type module_id) {
   return ret;
 }
 
+```
+
+```plantuml
+@startuml
+participant client
+participant server
+
+client -> server : GetLatestVersionsAndCheck
+activate client
+server -> client : ModuleIds -> DeployTreeIds
+
+
+client -> server : ModuleId, DeployTreeId
+
+server -> client : DeployTree
+
+deactivate client
+
+client -> client : cache start
+activate client
+
+deactivate client
+
+@enduml
+```
+
+```plantuml
+interface TClient {
+  + error Call(Context, method_str, args, result)
+}
+class NodeManagerServiceClient {
+  + c thrfit.TClient
+}
+
+NodeManagerServiceClient *-- TClient
+
+interface NodeManagerService {
+  + (ListHostsResponse, error) ListHosts(context) 
+  + ... xxx (...)
+}
 ```

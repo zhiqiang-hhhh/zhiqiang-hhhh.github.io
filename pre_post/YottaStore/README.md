@@ -73,7 +73,6 @@ class DeployTree {
 }
 
 @enduml
-
 ```
 #### Cayman
 一致性哈希。保存 slot -> nodeid 的映射。
