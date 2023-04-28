@@ -107,7 +107,21 @@ class ColumnArray
 @enduml
 ```
 
+### Higher-order function for arrays
+高阶函数：functional argument 必须是一个 lambda 函数。
+高阶函数 apply a map(transform) to array (or multiple arrays of identical size) by lambda function. and return some result bases on that transformation.
+#### lambda 函数
+
+lambda 函数：以箭头为标志，左边是一组 formal parameters，右边是一个可以使用这些 formal parameters 的表达式
+```
+x -> 2 * x
+str -> str != Referer
+```
+以上是 lambda 函数的基础概念。
+
+
 ### arrayMap 是怎么执行的
+
 ```sql
 select arrayMap(x -> (x + 2), arr) from arrayTest;
 ```
@@ -388,6 +402,38 @@ ColumnPtr executeImpl(
 * D 
 进行**参数对齐**，并且对lambda函数进行运算。
 
+参数对齐要求我们处理的两个向量具有相同的长度，因此当 arrayMap 处理多个 array 列时，要求这些列上同一行的array具有相同的大小。否则我们就无法进行向量化运算啦！比如，对于如下的表，如果我们希望对 arr 列的所有arr都进行向量加二，对arr2列都进行向量加三，
+```sql
+select * from arrayTest2 order by key
+
+┌─key─┬─arr───────┬─arr2──────────┐
+│   1 │ [1,2,3,4] │ [-1,-2,-3,-4] │
+│   2 │ [5,6,7,8] │ [-5,-6,-7,-8] │
+│   3 │ [9,10]    │ [-9,-10]      │
+│   4 │ [11,12]   │ [-11,-12,-13] │
+└─────┴───────────┴───────────────┘
+```
+那么我们直觉上希望通过如下的map达到目标：
+```sql
+select arrayMap(x,y -> (x+2,y+3), arr, arr2) from arrayTest2
+```
+如果我们不了解底层的执行过程，可能会认为，lambda 函数中x与y又不需要直接进行相互运算，所以即使arr与arr2并不是“模式相同”的列，那应该也不会相互影响，但是实际上由于在clickhouse中，arrayMap 是一批次处理它的所有参数的，所以要求这两个列必须具有相同的模式！
+```sql
+select arrayMap(x,y -> (x+2,y+3), arr, arr2) from arrayTest2;
+
+┌─arrayMap(lambda(tuple(x, y), tuple(plus(x, 2), plus(y, 3))), arr, arr2)─┐
+│ [(3,2),(4,1),(5,0),(6,-1)]                                              │
+│ [(7,-2),(8,-3),(9,-4),(10,-5)]                                          │
+│ [(11,-6),(12,-7)]                                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Received exception from server (version 23.4.1):
+DB::Exception: Arrays passed to arrayMap must have equal size: while executing 
+'FUNCTION arrayMap(__lambda :: 4, arr :: 0, arr2 :: 1) -> arrayMap(lambda(tuple(x, y),tuple(plus(x, 2), plus(y, 3))), arr, arr2) 
+Array(Tuple(Int16, Int16)) : 3'. (SIZES_OF_ARRAYS_DONT_MATCH)
+```
+
+
 #### 参数对齐
 对于我们的demo，arr 列为
 ```
@@ -422,7 +468,7 @@ for (arr : arrays) {
 2   9
 2   10
 ```
-这样子我们就构造了两个向量，执行一次lambda函数`res = lambda_vec(vec1, vec2)`。arr 列刚被加载到内存中时就是向量排列，ColumnConst本身也是向量排列，但是由于我们的另一个列是array，其张开后的行数与ColumnConst不一致，因此需要对ColumnConst列进行复制
+这样子我们就构造了两个向量，执行一次lambda函数`res = lambda_func(vec1, vec2)`。arr 列刚被加载到内存中时就是数组，ColumnConst本身也是数组，但是由于我们的另一个列是array，其展开开后的行数与ColumnConst不一致，因此需要对ColumnConst列进行复制
 ```cpp
 ColumnFunction::replicate(const Offsets & offset) const
 {
@@ -550,7 +596,8 @@ void filterArraysImplGeneric(
 }
 ```
 
-### ArrayFold
+### arrayFold
+#### 实现
 ```sql
 SELECT arrayFold(x, acc -> acc + x * 2, [1,2,3,4], toInt64(3));
 ```
@@ -562,4 +609,36 @@ for x in [1,2,3,4] do:
     acc = acc + x * 2;
 
 return acc
+```
+arrayFlod 这个函数整体来看可以看作是是有两个入参，第一个参数是一个 lambda 函数，第二个参数是 lambda 函数的入参。
+比如`arrayFold(x, acc -> acc + x * 2, [1,2,3,4], toInt64(3))` 的第一个参数是一个 lambda 函数 `x, acc -> acc + x * 2`，该 lambda 函数接收两个参数， arrayFold 的第二个参数是`[1,2,3,4], toInt64(3)`，这个参数由两部分组成，第一部分是一个 array，对应 lambda 函数的第一个入参，第二个部分是一个 int64，对应 lambda 函数的第二个入参。
+```
+1   *   2   +   3   =   5   5   *   2   +   5   =   15
+2   *   2   +   3   =   7   6   *   2   +   7   =   19
+3   *   2   +   3   =   9   7   *   2   +   9   =   23  
+4   *   2   +   3   =   11, 8   *   2   +   11  =   26
+```
+
+
+### bug
+这里提示信息出现了`Function(? -> ?)`
+```
+<Debug> executeQuery: (from [::1]:35528) select arrayMap(x -> (x + 2), arr, arr2) from arrayTest2; (stage: Complete)
+2023.04.28 09:41:16.793422 [ 684731 ] {0b6da4c7-55ac-4a0f-949f-ab3af1184d25} <Error> executeQuery: Code: 43. DB::Exception: First argument for this overload of arrayMap must be a function with 2 arguments, found Function(?
+ -> ?) instead: While processing arrayMap(x -> (x + 2), arr, arr2). (ILLEGAL_TYPE_OF_ARGUMENT) (version 23.4.1.1) (from [::1]:35528) (in query: select arrayMap(x -> (x + 2), arr, arr2) from arrayTest2;), Stack trace (when
+copying this message, always include the lines below):
+
+0. /data/hzq/ClickHouse/contrib/llvm-project/libcxx/include/exception:134: std::exception::capture() @ 0x1a23a902 in /data/hzq/ClickHouse/build/programs/clickhouse
+1. /data/hzq/ClickHouse/contrib/llvm-project/libcxx/include/exception:112: std::exception::exception[abi:v15000]() @ 0x1a23a8cd in /data/hzq/ClickHouse/build/programs/clickhouse
+2. /data/hzq/ClickHouse/base/poco/Foundation/src/Exception.cpp:27: Poco::Exception::Exception(String const&, int) @ 0x32806ce0 in /data/hzq/ClickHouse/build/programs/clickhouse
+3. /data/hzq/ClickHouse/src/Common/Exception.cpp:89: DB::Exception::Exception(DB::Exception::MessageMasked&&, int, bool) @ 0x22cfcbae in /data/hzq/ClickHouse/build/programs/clickhouse
+4. /data/hzq/ClickHouse/src/Common/Exception.h:54: DB::Exception::Exception(String&&, int, bool) @ 0x1a22dc0a in /data/hzq/ClickHouse/build/programs/clickhouse
+5. /data/hzq/ClickHouse/src/Common/Exception.h:81: DB::Exception::Exception<String, unsigned long, String>(int, FormatStringHelperImpl<std::type_identity<String>::type, std::type_identity<unsigned long>::type, std::type_id
+entity<String>::type>, String&&, unsigned long&&, String&&) @ 0x1b34b008 in /data/hzq/ClickHouse/build/programs/clickhouse
+6. /data/hzq/ClickHouse/src/Functions/array/FunctionArrayMapped.h:160: DB::FunctionArrayMapped<DB::ArrayMapImpl, DB::NameArrayMap>::getLambdaArgumentTypes(std::vector<std::shared_ptr<DB::IDataType const>, std::allocator<st
+d::shared_ptr<DB::IDataType const>>>&) const @ 0x226aab05 in /data/hzq/ClickHouse/build/programs/clickhouse
+7. /data/hzq/ClickHouse/src/Functions/IFunctionAdaptors.h:144: DB::FunctionToOverloadResolverAdaptor::getLambdaArgumentTypesImpl(std::vector<std::shared_ptr<DB::IDataType const>, std::allocator<std::shared_ptr<DB::IDataTyp
+e const>>>&) const @ 0x1a22b08d in /data/hzq/ClickHouse/build/programs/clickhouse
+8. /data/hzq/ClickHouse/src/Functions/IFunction.cpp:449: DB::IFunctionOverloadResolver::getLambdaArgumentTypes(std::vector<std::shared_ptr<DB::IDataType const>, std::allocator<std::shared_ptr<DB::IDataType const>>>&) const
+ @ 0x299d64fb in /data/hzq/ClickHouse/build/programs/clickhouse
 ```
