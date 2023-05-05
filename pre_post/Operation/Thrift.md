@@ -1,6 +1,6 @@
-[[toc]]
+[toc]
 
-# Thrift
+# Thrift Overview
 Thrift：Cross Language RPC Framework.
 
 ## Install
@@ -133,5 +133,58 @@ int main(int argc, char **argv) {
   return 0;
 }
 ```
+
+# Source code
+```plantuml
+@startuml
+interface TServerTransport
+{
+  + Listen() : error
+  + Accept() : TTransport, error
+  + Close() : error
+  + Interrupt() : error
+}
+
+TServerTransport *-- TTransport
+TTransportFactory *-- TTransport
+
+interface TTransport 
+{
+  + Read([]byte) : int, error
+  + Write([]byte) : int, error
+  + Close() : error
+  + Flush(context) : error
+  + RemainingBytes() : uint64
+  + Open() : error
+  + IsOpen() : error
+}
+
+interface TTransportFactory
+{
+  + GetTransport(TTransport) : TTransport, error
+}
+@enduml
+```
+```plantuml
+@startuml
+interface TProtocol 
+{
+  + WriteMessageBegin(string, TMessageType, seqid) : error
+  + WriteMessageEnd() : error
+  ...
+  + ReadMessageBegin() : (string, typeId, seqid, error)
+  + ReadMessageEnd() : error
+  + ReadByte() : int8, error
+  + Transport() : TTransport
+}
+
+interface TProtocolFactory 
+{
+  + GetProtocol(TTransport) : TProtocol
+}
+
+@enduml
+```
+
 
 
