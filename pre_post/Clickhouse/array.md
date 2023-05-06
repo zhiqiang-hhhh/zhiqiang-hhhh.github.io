@@ -402,6 +402,8 @@ ColumnPtr executeImpl(
 * D 
 进行**参数对齐**，并且对lambda函数进行运算。
 
+参数对齐是指给lambda函数传入相同“长度”的参数，以向量计算的模式，得到运算结果。这里向量计算的体现就是一次lambda函数计算，得到多个行的结果，而不是对每一行都执行一次lambda函数。
+
 参数对齐要求我们处理的两个向量具有相同的长度，因此当 arrayMap 处理多个 array 列时，要求这些列上同一行的array具有相同的大小。否则我们就无法进行向量化运算啦！比如，对于如下的表，如果我们希望对 arr 列的所有arr都进行向量加二，对arr2列都进行向量加三，
 ```sql
 select * from arrayTest2 order by key
@@ -610,15 +612,30 @@ for x in [1,2,3,4] do:
 
 return acc
 ```
-arrayFlod 这个函数整体来看可以看作是是有两个入参，第一个参数是一个 lambda 函数，第二个参数是 lambda 函数的入参。
+arrayFlod 这个函数整体来看有两个入参，第一个参数是一个 lambda 函数，第二个参数是 lambda 函数的入参。
 比如`arrayFold(x, acc -> acc + x * 2, [1,2,3,4], toInt64(3))` 的第一个参数是一个 lambda 函数 `x, acc -> acc + x * 2`，该 lambda 函数接收两个参数， arrayFold 的第二个参数是`[1,2,3,4], toInt64(3)`，这个参数由两部分组成，第一部分是一个 array，对应 lambda 函数的第一个入参，第二个部分是一个 int64，对应 lambda 函数的第二个入参。
 ```
-1   *   2   +   3   =   5   5   *   2   +   5   =   15
-2   *   2   +   3   =   7   6   *   2   +   7   =   19
-3   *   2   +   3   =   9   7   *   2   +   9   =   23  
-4   *   2   +   3   =   11, 8   *   2   +   11  =   26
+x         acc    acc
+1 * 2  +  3   =  5
+2 * 2  +  5   =  9
+3 * 2  +  9   =  15
+4 * 2  +  14  =  23
 ```
+根据上述思路，可以通过如下方式实现arrayFold
+```
+for row in rows:
+    for idx = 0; idx < cur_array_size; ++idx:   // 计算当前行的 final acc
+        acc = lambda(acc, row)  
+```
+上述过程中，我们需要计算 lambda 函数一共 N 次，其中 N 等于某列下，所有array中元素的个数相加。
+考虑到lambda函数其实每次都是接收一组向量进行计算的，如果我们假设所有array的大小都等于 n，这样每个批次处理的数据就是一个长方体，我们可以把这个长方体按照z轴切为n个切片，第一个切片由所有坐标为`(~,~,0)`的元素组成，第二个切片由所有`(~,~,1)`组成，
+```
+for slice in slices:
+    acc = lambda(acc, slice)
+```
+这样我们可以把lambda函数的计算次数减少为 n 次。
 
+在实际情况中，arrayFold 并没有要求所有的array大小相等，这一事实会导致 arrayFold的实现难度提高，但是基本的处理思路还是进行切片，只不过需要增加一些分支处理逻辑。
 
 ### bug
 这里提示信息出现了`Function(? -> ?)`
