@@ -5,7 +5,7 @@
 
 ### Array 的内存表示
 
-array 类型对应的内存中的类型为 ColumnArray，该类型包含两个数组，一个 data 数组顺序保存该所有的 element，这个数组是连续的，另一个 offset 数组保存每个 array 在 ColumnArray 中的起始位置，以下面的 sql 为例，
+array 类型对应的内存中的类型为 ColumnArray，该类型包含两个数组，一个 data 数组顺序保存该 array 所有的 element，这个数组是连续的，另一个 offset 数组保存每个 array 在 ColumnArray 中的起始位置，以下面的 sql 为例，
 ```sql
 create table arrayTest(key Int8,  arr Array(Int8)) engine=MergeTree() order by key;
 
