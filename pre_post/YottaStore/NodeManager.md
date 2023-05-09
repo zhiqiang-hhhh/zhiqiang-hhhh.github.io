@@ -124,3 +124,32 @@ interface NodeManagerService {
   + ... xxx (...)
 }
 ```
+
+```plantuml
+@startuml
+interface NodeManagerGuestClient
+{
+  + Start(context) : error
+  + ListHosts(context) : error
+}
+
+NodeManagerGuestClient *-- NodeManagerUserClient
+
+interface NodeManagerUserClient
+{
+  + GetMyNodeDigest(context) (NodeDigest, error)
+  + SetMyServerDeployStatus(deployStatus) error
+}
+
+NodeManagerUserClient *-- NodeManagerClientImpl
+
+class NodeManagerClientImpl
+{
+  - cfg : NodeManagerAdmiinClientConfig
+  - handler : ThriftHandler
+  - role  : int
+  - cache : nodeManagerClientCache
+  - cachedModuleIds map[model.ModuleId]bool
+}
+@enduml
+```
