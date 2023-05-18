@@ -13,7 +13,7 @@ insert into table arrayTest values (1, [1,2,3,4]),(2,[5,6,7,8]),(3,[9,10])
 ```
 对应 ColumnArray 的内存分布类似下图：
 ```txt
-data:   [1,2,3,4,2,3,4,5,3,4]
+data:   [1,2,3,4,5,6,7,8,9,10]
 offset: [4,8,10]
 ```
 观察 `ColumnArray::getDataAt(size_t n)` 的实现以更好的理解：
