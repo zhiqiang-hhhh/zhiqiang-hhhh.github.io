@@ -47,7 +47,10 @@ ColumnPtr ColumnFunction::replicate(const Offsets & offsets) const
     return ColumnFunction::create(replicated_size, function, capture, is_short_circuit_argument, is_function_compiled);
 }
 ```
+arrayFold 中这里的 captured_columns 包含两部分，一部分是构造 ColumnFunction 时传递的，另一部分是之后通过appendArguments添加的。第一部分是固定参数。
+比如
+`SELECT arrayFold((x, y, z, acc) -> (((acc + (x * 2)) + (y * 3)) + (z * 4)), [1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], toInt64(3))`，
+这里的固定参数就是 ColumnConst 1， 2，3
 
-```cpp
 
-```
+`PATH=$PATH:/data/hzq/ClickHouse/build/programs tests/clickhouse-test`
