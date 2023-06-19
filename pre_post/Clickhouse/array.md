@@ -1,7 +1,39 @@
 [TOC]
 
 
-## Clickhouse Array
+## Clickhouse Array 
+
+```cpp
+class IColumn : public COW<IColumn>
+{
+public:
+    using Offsets = PaddedPODArray<Offset>
+...
+}
+
+class ColumnArray final : public COWHelper<IColumn, ColumnArray>
+{
+public:
+    IColumn & getOffsetsColumn() { return *offsets; }
+    const IColumn & getOffsetsColumn() const { return *offsets; }
+
+    Offsets & ALWAYS_INLINE getOffsets()
+    {
+        return assert_cast<ColumnOffsets &>(*offsets).getData();
+    }
+
+    const Offsets & ALWAYS_INLINE getOffsets() const
+    {
+        return assert_cast<const ColumnOffsets &>(*offsets).getData();
+    }
+
+private:
+    WrappedPtr offsets;
+};
+```
+
+
+
 
 ### Array 的内存表示
 
@@ -44,25 +76,9 @@ size_t ALWAYS_INLINE sizeAt(ssize_t i) const { return getOffsets()[i] - getOffse
 ```
 `offsetAt(n)`的计算利用了 PODArray 的一个特性：在 -1 的位置填充默认值，对于 ColumeOffset 这个默认值为 0。所以`sizeAt(0)`的结果就是`4-0=4`。
 
-```c++
-
-```
 所以当我们想要获取第一个数组的起始offset时，`offsetAt(0) == getOffsets()[-1]`，结果为 0。
 
-
-
-
 对前面的ColumnArray每个元素执行一次`getDataAt`将会对应下面的结果：
-```txt
-get
-```
-
-
-
-
-
-
-
 ```c++
 MutableColumnPtr ColumnArray::cloneResized(size_t to_size) const
 {
