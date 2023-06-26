@@ -93,6 +93,61 @@ for (size_t i = 0; i < num_rows; ++i)
 
 
 
+#### Permute
+```cpp
+/// Permutes elements using specified permutation. Is used in sorting.
+/// limit - if it isn't 0, puts only first limit elements in the result.
+using Permutation = PaddedPODArray<size_t>;
+[[nodiscard]] virtual Ptr permute(const Permutation & perm, size_t limit) const = 0;
+
+ColumnPtr ColumnArray::permute(const Permutation & perm, size_t limit) const
+{
+    return permuteImpl(*this, perm, limit);
+}
+
+template <typename Column>
+ColumnPtr permuteImpl(const Column & column, const IColumn::Permutation & perm, size_t limit)
+{
+    limit = getLimitForPermutation(column.size(), perm.size(), limit);
+    return column.indexImpl(perm, limit);
+}
+
+template <typename T>
+ColumnPtr ColumnArray::indexImpl(const PaddedPODArray<T> & indexes, size_t limit) const
+{
+    assert(limit <= indexes.size());
+    if (limit == 0)
+        return ColumnArray::create(data->cloneEmpty());
+
+    /// Convert indexes to UInt64 in case of overflow.
+    auto nested_indexes_column = ColumnUInt64::create();
+    PaddedPODArray<UInt64> & nested_indexes = nested_indexes_column->getData();
+    nested_indexes.reserve(getOffsets().back());
+
+    auto res = ColumnArray::create(data->cloneEmpty());
+
+    Offsets & res_offsets = res->getOffsets();
+    res_offsets.resize(limit);
+    size_t current_offset = 0;
+
+    for (size_t i = 0; i < limit; ++i)
+    {
+        for (size_t j = 0; j < sizeAt(indexes[i]); ++j)
+            nested_indexes.push_back(offsetAt(indexes[i]) + j);
+        current_offset += sizeAt(indexes[i]);
+        res_offsets[i] = current_offset;
+    }
+
+    if (current_offset != 0)
+        res->data = data->index(*nested_indexes_column, current_offset);
+
+    return res;
+}
+```
+
+
+
+
 ### Array 的内存表示
 
 array 类型对应的内存中的类型为 ColumnArray，该类型包含两个数组，一个 data 数组顺序保存该 array 所有的 element，这个数组是连续的，另一个 offset 数组保存每个 array 在 ColumnArray 中的起始位置，以下面的 sql 为例，
