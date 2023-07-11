@@ -3,151 +3,6 @@
 
 ## Clickhouse Array 
 
-```cpp
-class IColumn : public COW<IColumn>
-{
-public:
-    using Offsets = PaddedPODArray<Offset>
-...
-}
-
-class ColumnArray final : public COWHelper<IColumn, ColumnArray>
-{
-public:
-    IColumn & getOffsetsColumn() { return *offsets; }
-    const IColumn & getOffsetsColumn() const { return *offsets; }
-
-    Offsets & ALWAYS_INLINE getOffsets()
-    {
-        return assert_cast<ColumnOffsets &>(*offsets).getData();
-    }
-
-    const Offsets & ALWAYS_INLINE getOffsets() const
-    {
-        return assert_cast<const ColumnOffsets &>(*offsets).getData();
-    }
-
-private:
-    WrappedPtr offsets;
-};
-```
-#### Scatter 操作
-遍历当前列的每一行，按照某个规则将每一行都 scatter(散射) 到 `vector<IColumn::MutablePtr>` 的某一个位置。
-比如举个例子，有一个列中的元素都为整数，内容是这样的一个向量
-```txt
-[1,2,3,4,5,6,7,8,9,10]
-```
-现在希望将这个列的元素按照某个规则进行重新分类，得到一个 `vector<IColumn::MutablePtr>`，结果的第一个列中只包含原始列中小于5的行，第二个列中只包含大于等于5的偶数，第三个列是大于等于5的奇数。
-
-为了实现我们的目的，我们需要一个 selector 数组，对原始 column 使用 selector 进行 scatter 之后，我们可以得到我们想要的结果如下：
-```
-array   selector    result[0]   result[1]   result[2]
-1       0           1           6           5
-2       0           2           8           7
-3       0           3           10          9
-4       0           4
-5       2           
-6       1           
-7       2
-8       1
-9       2
-10      1
-```
-
-```cpp
-using ColumnIndex = UInt64;
-using Selector = PaddedPODArray<ColumnIndex>;
-
-template <typename Derived>
-std::vector<IColumn::MutablePtr> IColumn::scatterImpl(ColumnIndex num_columns,
-                                             const Selector & selector) const
-{
-    size_t num_rows = size();
-
-    if (num_rows != selector.size())
-        throw Exception(...);
-    
-    std::vector<MutablePtr> columns(num_columns);
-    for (auto & column : columns)
-        column = cloneEmpty();
-
-    {
-        size_t reserve_size = static_cast<size_t>(num_rows * 1.1 / num_columns);    /// 1.1 is just a guess. Better to use n-sigma rule.
-
-        if (reserve_size > 1)
-            for (auto & column : columns)
-                column->reserve(reserve_size);
-    }
-
-    for (size_t i = 0; i < num_rows; ++i)
-        static_cast<Derived &>(*columns[].insertFrom(*this, i));
-
-    return columns;
-}
-```
-scatter 的核心操作就是这一行：
-```cpp
-for (size_t i = 0; i < num_rows; ++i)
-    static_cast<Derived &>(*columns[selector[i]].insertFrom(*this, i));
-```
-
-
-
-#### Permute
-```cpp
-/// Permutes elements using specified permutation. Is used in sorting.
-/// limit - if it isn't 0, puts only first limit elements in the result.
-using Permutation = PaddedPODArray<size_t>;
-[[nodiscard]] virtual Ptr permute(const Permutation & perm, size_t limit) const = 0;
-
-ColumnPtr ColumnArray::permute(const Permutation & perm, size_t limit) const
-{
-    return permuteImpl(*this, perm, limit);
-}
-
-template <typename Column>
-ColumnPtr permuteImpl(const Column & column, const IColumn::Permutation & perm, size_t limit)
-{
-    limit = getLimitForPermutation(column.size(), perm.size(), limit);
-    return column.indexImpl(perm, limit);
-}
-
-template <typename T>
-ColumnPtr ColumnArray::indexImpl(const PaddedPODArray<T> & indexes, size_t limit) const
-{
-    assert(limit <= indexes.size());
-    if (limit == 0)
-        return ColumnArray::create(data->cloneEmpty());
-
-    /// Convert indexes to UInt64 in case of overflow.
-    auto nested_indexes_column = ColumnUInt64::create();
-    PaddedPODArray<UInt64> & nested_indexes = nested_indexes_column->getData();
-    nested_indexes.reserve(getOffsets().back());
-
-    auto res = ColumnArray::create(data->cloneEmpty());
-
-    Offsets & res_offsets = res->getOffsets();
-    res_offsets.resize(limit);
-    size_t current_offset = 0;
-
-    for (size_t i = 0; i < limit; ++i)
-    {
-        for (size_t j = 0; j < sizeAt(indexes[i]); ++j)
-            nested_indexes.push_back(offsetAt(indexes[i]) + j);
-        current_offset += sizeAt(indexes[i]);
-        res_offsets[i] = current_offset;
-    }
-
-    if (current_offset != 0)
-        res->data = data->index(*nested_indexes_column, current_offset);
-
-    return res;
-}
-```
-
-
-
-
 ### Array 的内存表示
 
 array 类型对应的内存中的类型为 ColumnArray，该类型包含两个数组，一个 data 数组顺序保存该 array 所有的 element，这个数组是连续的，另一个 offset 数组保存每个 array 在 ColumnArray 中的起始位置，以下面的 sql 为例，
@@ -234,6 +89,87 @@ class ColumnArray
 }
 
 @enduml
+```
+
+```cpp
+class IColumn : public COW<IColumn>
+{
+public:
+    using Offsets = PaddedPODArray<Offset>
+...
+}
+
+class ColumnArray final : public COWHelper<IColumn, ColumnArray>
+{
+public:
+    IColumn & getOffsetsColumn() { return *offsets; }
+    const IColumn & getOffsetsColumn() const { return *offsets; }
+
+    Offsets & ALWAYS_INLINE getOffsets()
+    {
+        return assert_cast<ColumnOffsets &>(*offsets).getData();
+    }
+
+    const Offsets & ALWAYS_INLINE getOffsets() const
+    {
+        return assert_cast<const ColumnOffsets &>(*offsets).getData();
+    }
+
+private:
+    WrappedPtr offsets;
+};
+```
+### Permute
+permute 的意思是排列，
+```cpp
+/// Permutes elements using specified permutation. Is used in sorting.
+/// limit - if it isn't 0, puts only first limit elements in the result.
+using Permutation = PaddedPODArray<size_t>;
+[[nodiscard]] virtual Ptr permute(const Permutation & perm, size_t limit) const = 0;
+
+ColumnPtr ColumnArray::permute(const Permutation & perm, size_t limit) const
+{
+    return permuteImpl(*this, perm, limit);
+}
+
+template <typename Column>
+ColumnPtr permuteImpl(const Column & column, const IColumn::Permutation & perm, size_t limit)
+{
+    limit = getLimitForPermutation(column.size(), perm.size(), limit);
+    return column.indexImpl(perm, limit);
+}
+
+template <typename T>
+ColumnPtr ColumnArray::indexImpl(const PaddedPODArray<T> & indexes, size_t limit) const
+{
+    assert(limit <= indexes.size());
+    if (limit == 0)
+        return ColumnArray::create(data->cloneEmpty());
+
+    /// Convert indexes to UInt64 in case of overflow.
+    auto nested_indexes_column = ColumnUInt64::create();
+    PaddedPODArray<UInt64> & nested_indexes = nested_indexes_column->getData();
+    nested_indexes.reserve(getOffsets().back());
+
+    auto res = ColumnArray::create(data->cloneEmpty());
+
+    Offsets & res_offsets = res->getOffsets();
+    res_offsets.resize(limit);
+    size_t current_offset = 0;
+
+    for (size_t i = 0; i < limit; ++i)
+    {
+        for (size_t j = 0; j < sizeAt(indexes[i]); ++j)
+            nested_indexes.push_back(offsetAt(indexes[i]) + j);
+        current_offset += sizeAt(indexes[i]);
+        res_offsets[i] = current_offset;
+    }
+
+    if (current_offset != 0)
+        res->data = data->index(*nested_indexes_column, current_offset);
+
+    return res;
+}
 ```
 
 ### Higher-order function for arrays
@@ -563,108 +499,6 @@ DB::Exception: Arrays passed to arrayMap must have equal size: while executing
 'FUNCTION arrayMap(__lambda :: 4, arr :: 0, arr2 :: 1) -> arrayMap(lambda(tuple(x, y),tuple(plus(x, 2), plus(y, 3))), arr, arr2) 
 Array(Tuple(Int16, Int16)) : 3'. (SIZES_OF_ARRAYS_DONT_MATCH)
 ```
-
-
-#### 参数对齐
-对于我们的demo，arr 列为
-```
-[1,2,3,4]
-[5,6,7,8]
-[9,10]
-```
-对于 `x -> (x + 2)`，要完成的计算过程类似对下面的一张表进行运算
-```
-2   [1,2,3,4]
-2   [5,6,7,8]
-2   [9,10]
-```
-如果是暴力写法，我们只需要两个 for 循环，累计 10 次执行lambda函数
-```
-for (arr : arrays) {
-    for (item : arr) {
-        res = lambda(2, item)
-    }
-}
-```
-现在为了利用SIMD指令，我们需要执行一个“对齐”操作，将所有的数据在内存中重新匹配排列一把如下
-```
-2   1
-2   2
-2   3
-2   4
-2   5
-2   6
-2   7
-2   8
-2   9
-2   10
-```
-这样子我们就构造了两个向量，执行一次lambda函数`res = lambda_func(vec1, vec2)`。arr 列刚被加载到内存中时就是数组，ColumnConst本身也是数组，但是由于我们的另一个列是array，其展开开后的行数与ColumnConst不一致，因此需要对ColumnConst列进行复制
-```cpp
-ColumnFunction::replicate(const Offsets & offset) const
-{
-    ...
-
-    /// A 进行 column 的复制
-    ColumnsWithTypeAndName capture = captured_columns;
-    for (auto & column : capture)
-        column.column = column.column->replicate(offsets);
-
-    size_t replicated_size = 0 == elements_size ? 0 : offsets.back();
-    return ColumnFunction::create(replicated_size, function, capture, is_short_circuit_argument, is_function_compiled);
-}
-```
-* A
-对于 x -> (x + 2) 这个lambda函数来说，captured_columns 就是一个 ColumnConst，ColumnConst 进行 replicate 之后，原先的 3 行 ColumnConst 就变为了 4 + 4 + 2 行。
-
-
-
-
-
---- 
-
----- 
-```sql
-create table arrayFoldDemo (array1 Array, array2 Array, ..., arrayn Array)
-```
-we have an arrayFold query like below:
-```sql
-select arrayFold(x1, ..., xn, accum -> expression, array1, ..., arrayn, init_accum) from arrayFoldDemo
-```
-Suppose table `arrayFoldDemo` has `M` rows, "biggest" array item has `H` elements, and table has `N` array columns in total.
-
-
-and we have pseudocode implementation of below:
-```txt
-let acc = init_accum
-for i = 0; i < num_rows_in_column; ++i
-    acc = expression(array1, ..., arrayN, accum)
-return acc
-```
-the implementation in [PR](https://github.com/ClickHouse/ClickHouse/pull/21589) will call lambda expression at most M times, and we suppose total cost virtual function call is C.
-
-the vectorized fashion, according to my understand, will call lambda expression at most H times, and total cose of virtual function is almost same with C.
-```txt
-let filter_mask = vector<size_t>(size_of(first_array_column))
-filter_mask[0] = first_array_column_offsets[0];
-let array_max_size = -INFINITE
-
-for i = 1; i < num_rows_in_first_column; ++i
-    filter_mask[i] = first_array_column_offsets[i] - first_array_column_offsets[i - 1];
-    array_max_size = max(array_max_size, filter_mask[i])
-
-for i = 0; i < array_max_size; ++i
-    lambda_input_arrays = empty_columns_array
-    for mask_copy : filter_mask:
-        height = mask_copy - i;
-        if height <= 0:
-            continue;
-        /// 
-        
-```
-
----
-
 ##### ColumnArray::filter
 ```c++
 ColumnPtr ColumnArray::filter(const Filter & filt, ssize_t result_size_hint) const
@@ -741,8 +575,9 @@ for x in [1,2,3,4] do:
 
 return acc
 ```
-arrayFlod 这个函数整体来看有两个入参，第一个参数是一个 lambda 函数，第二个参数是 lambda 函数的入参。
-比如`arrayFold(x, acc -> acc + x * 2, [1,2,3,4], toInt64(3))` 的第一个参数是一个 lambda 函数 `x, acc -> acc + x * 2`，该 lambda 函数接收两个参数， arrayFold 的第二个参数是`[1,2,3,4], toInt64(3)`，这个参数由两部分组成，第一部分是一个 array，对应 lambda 函数的第一个入参，第二个部分是一个 int64，对应 lambda 函数的第二个入参。
+arrayFlod 这个函数整体来看有两b部分入参，第一部分是 lambda 函数部分，第二部分是 lambda 函数的入参。
+比如`arrayFold(x, acc -> acc + x * 2, [1,2,3,4], toInt64(3))` 的第一部分参数是一个 lambda 函数 `x, acc -> acc + x * 2`，该 lambda 函数接收两个参数， arrayFold 的第二部分参数是`[1,2,3,4], toInt64(3)`，这部分参数又分为两部分，第一部分是一个 array，对应 lambda 函数的第一个入参，第二个部分是一个 int64，对应 lambda 函数的第二个入参。
+把上述 arrayFold 执行的每一步记录下来就可以得到：
 ```
 x         acc    acc
 1 * 2  +  3   =  5
@@ -756,15 +591,11 @@ for row in rows:
     for idx = 0; idx < cur_array_size; ++idx:   // 计算当前行的 final acc
         acc = lambda(acc, row)  
 ```
-上述过程中，我们需要计算 lambda 函数一共 N 次，其中 N 等于某列下，所有array中元素的个数相加。
-考虑到lambda函数其实每次都是接收一组向量进行计算的，如果我们假设所有array的大小都等于 n，这样每个批次处理的数据就是一个长方体，我们可以把这个长方体按照z轴切为n个切片，第一个切片由所有坐标为`(~,~,0)`的元素组成，第二个切片由所有`(~,~,1)`组成，
-```
-for slice in slices:
-    acc = lambda(acc, slice)
-```
-这样我们可以把lambda函数的计算次数减少为 n 次。
+上述过程中，我们需要计算 lambda 函数一共 N 次，其中 N 等于某列下，所有 array 中元素的个数相加。
+考虑到 lambda 函数其实每次都是接收一组向量进行计算的，如果我们假设所有 array 的大小都等于 n，这样每个批次处理的数据就是一个长方体，长方体的长宽高（xyz）分别为列，array 大小以及 array 行数。
+如果我们把这个长方体按照 y 轴切为 n 个切片，第一个切片由所有坐标为`(~,0,～)`的元素组成，第二个切片由所有`(~,1,～)`组成，然后每次给 lambda 函数输入这个切片进行运算，那么我们可以把lambda函数的计算次数减少为 n 次。
 
-在实际情况中，arrayFold 并没有要求所有的array大小相等，这一事实会导致 arrayFold的实现难度提高，但是基本的处理思路还是进行切片，只不过需要增加一些分支处理逻辑。
+在实际情况中，arrayFold 并没有要求所有的array大小相等，这一事实会导致 arrayFold的实现难度提高，但是基本的处理思路还是进行切片，不过需要利用一些简单的辅助算法实现我们的目的。
 
 ### bug
 这里提示信息出现了`Function(? -> ?)`
