@@ -117,7 +117,7 @@ static void threadFunction(PullingAsyncPipelineExecutor::Data & data, ThreadGrou
     data.is_finished = true;
     data.finish_event.set();
 }
-
+```
 ```c++
 /// Execute pipeline in multiple threads. Must be called once.
 /// In case of exception during execution throws any occurred.
@@ -179,6 +179,7 @@ void PipelineExecutor::executeImpl(size_t num_threads)
     finished_flag = true;
 }
 ```
+
 ```plantuml
 @startuml
 class PipelineExecutor {
