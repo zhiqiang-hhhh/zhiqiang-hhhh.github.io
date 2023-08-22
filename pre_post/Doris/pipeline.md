@@ -524,4 +524,78 @@ class PlanFragmentExecutor {
 1. 给 report thread pool 提交一个 task，该 task 会执行到 `PlanFragmentExecutor::send_report(false);` 用于在 Fragment 执行期间进行汇报
 2. open 函数结束时，执行 `PlanFragmentExecutor::send_report(true)` 用于在 Fragment 结束（TODO: 为什么是在 open 结束 send_report(true)，而不是在 close 结束时 report(true)）
 
-####
+#### Sink 节点的处理
+
+```cpp
+PipelineFragmentContext::prepare(const doris::TPipelineFragmentParams& request)
+{
+    ...
+    if (_sink) {
+        RETURN_IF_ERROR(_create_sink(request.local_params[idx].sender_id,
+                                     request.fragment.output_sink, _runtime_state.get()));
+    }
+    ...
+    if (_sink) {
+        _runtime_state->runtime_profile()->add_child(_sink->profile(), true, nullptr);
+    }
+}
+
+Status PipelineFragmentContext::_create_sink(int sender_id, const TDataSink& thrift_sink,
+                                             RuntimeState* state)
+{
+    OperatorBuilderPtr sink_;
+    switch (thrift_sink.type) {
+        case TDataSinkType::DATA_STREAM_SINK: {
+        sink_ = std::make_shared<ExchangeSinkOperatorBuilder>(thrift_sink.stream_sink.dest_node_id,
+                                                              _sink.get(), this);
+        break;
+        }
+        case TDataSinkType::RESULT_SINK: {
+        sink_ = std::make_shared<ResultSinkOperatorBuilder>(next_operator_builder_id(),
+                                                            _sink.get());
+        break;
+        }
+        ...
+    }
+    ...
+    return _root_pipeline->set_sink(sink_);
+}
+
+```
+
+对于 F01，这里会创建 ResultSinkOPeratorBuild
+对于 F00，这里会创建 ExchangeSinkOperatorBuilder
+
+```cpp {.line-numbers}
+Status PipelineFragmentContext::_build_pipeline_tasks(
+        const doris::TPipelineFragmentParams& request) {
+    _total_tasks = 0;
+    for (PipelinePtr& pipeline : _pipelines) {
+        // if sink
+        auto sink = pipeline->sink()->build_operator();
+        // TODO pipeline 1 need to add new interface for exec node and operator
+        sink->init(request.fragment.output_sink);
+
+        Operators operators;
+        RETURN_IF_ERROR(pipeline->build_operators(operators));
+        auto task =
+                std::make_unique<PipelineTask>(pipeline, _total_tasks++, _runtime_state.get(),
+                                               operators, sink, this, pipeline->pipeline_profile());
+        sink->set_child(task->get_root());
+        _tasks.emplace_back(std::move(task));
+        _runtime_profile->add_child(pipeline->pipeline_profile(), true, nullptr);
+    }
+
+    for (auto& task : _tasks) {
+        RETURN_IF_ERROR(task->prepare(_runtime_state.get()));
+    }
+
+    // register the profile of child data stream sender
+    for (auto& sender : _multi_cast_stream_sink_senders) {
+        _sink->profile()->add_child(sender->profile(), true, nullptr);
+    }
+
+    return Status::OK();
+}
+```
+这里第 6 行似乎隐含了每个 pipeline 里一定会有一个 sink node？

@@ -140,8 +140,3 @@ class PipelineTask {
     
 }
 ```
-
-
-* **Report 执行的时机**
-pipeline 版本。
-
