@@ -39,7 +39,7 @@ SELECT DISTINCT cid
     ORDER BY cid
 ```
 DBMS通常会采用如下pipeline来完成查询：
-首先使用filter遍历所有tuple，遍历结束后只剩下grade等于B和C的tuple，然后remove除了cid之外的其他列值(假设底层是行存)，这时得到的结果是无序的，那么再用之前说的外部排序对cid列进行排序，最后顺序遍历陪排序过的所有tuple，消除重复。
+首先使用filter遍历所有tuple，遍历结束后只剩下grade等于B和C的tuple，然后remove除了cid之外的其他列值(假设底层是行存)，这时得到的结果是无序的，那么再用之前说的外部排序对cid列进行排序，最后顺序遍历被排序过的所有tuple，消除重复。
 
 什么时候应该选择基于sorting的聚合过程：当我们需要结果按照某个属性被排序时。
 

@@ -1,4 +1,12 @@
 [TOC]
+
+### QUERY 管控
+
+QeProcessorImpl
+
+ConnectContext
+
+
 ### FE
 
 handleQueryStmt
@@ -338,7 +346,7 @@ QueryId：由 fe 赋值给 query，一起作为 query parameter 传递给 be
 QueryContext：be 为每个收到的 query 创建一个 query context，保存在 FragmentMgr 中，与 query id 一一对应。
 * Fragment
 
-一条 query 是以 fragment 为粒度执行的，一个 framgent 中将会包含数个计算 node，比如一个查询 `select * from demo.example_tbl where age <25;`，我们先通过 explain 来查看其物理执行计划：
+在 FE 的视角，一条 query 是以 fragment 为粒度执行的，一个 framgent 中将会包含数个计算 node，比如一个查询 `select * from demo.example_tbl where age <25;`，我们先通过 explain 来查看其物理执行计划：
 ```sql
 explain select * from demo.example_tbl where age <25;
 +---------------------------------------------------------------------------------------------------------------+
@@ -382,7 +390,7 @@ explain select * from demo.example_tbl where age <25;
 为了防止歧义，这里我们称物理执行计划中的一组节点为 fragment，每个 fragment 的执行单位为 fragment instance，简称 instance。
 
 该执行计划被分为两个 fragment，一个是 `FRAGMENT 0`，另一个是 `FRAGMENT 1`。
-F0 中包含一个 VRESULT SINK 节点用于输出查询结果，一个 VEXCHANGE 节点用于接收 F1 传递给它的数据。F1 中则包含一个 VOlapScanNode 用于从 example_tbl 这张表中读数据，并且对数据进行过滤，还包含一个 STREAM DATA SINK 节点用于输出 F1 的结果给 F0。**这两个 fragment 将会对应两次对 FragmentMgr::exec_plan_fragment 的 rpc 请求**。
+F0 中包含一个 VRESULT SINK 节点用于输出查询结果，一个 VEXCHANGE 节点用于接收 F1 传递给它的数据。F1 中则包含一个 VOlapScanNode 用于从 example_tbl 这张表中读数据，并且对数据进行过滤，还包含一个 STREAM DATA SINK 节点用于输出 F1 的结果给 F0。**这两个 fragment 将会对应两次对 BE 上 FragmentMgr::exec_plan_fragment 的 rpc 请求**。
 
 每个 fragment 执行时应该创建多少 instance 由 planner 确定，每个 instance 都会在对应的 be 上创建一个对应的 `PipelineFragmentContext` 来负责管理该 instance 的执行。在本文例子中，我们修改 fe 的代码，让 F1 只生成两个 instance（默认情况下该 fragment 最少将会生成 cores/2 个 instance），F0 默认情况会包含一个 instance。
 ```cpp {.line-numbers}
@@ -563,8 +571,8 @@ Status PipelineFragmentContext::_create_sink(int sender_id, const TDataSink& thr
 
 ```
 
-对于 F01，这里会创建 ResultSinkOPeratorBuild
-对于 F00，这里会创建 ExchangeSinkOperatorBuilder
+对于 F00，这里会创建 ResultSinkOperatorBuild
+对于 F01，这里会创建 ExchangeSinkOperatorBuilder
 
 ```cpp {.line-numbers}
 Status PipelineFragmentContext::_build_pipeline_tasks(
@@ -599,3 +607,6 @@ Status PipelineFragmentContext::_build_pipeline_tasks(
 }
 ```
 这里第 6 行似乎隐含了每个 pipeline 里一定会有一个 sink node？
+
+
+#### Exchange 节点的处理
