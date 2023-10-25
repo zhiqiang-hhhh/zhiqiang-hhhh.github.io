@@ -609,4 +609,62 @@ Status PipelineFragmentContext::_build_pipeline_tasks(
 这里第 6 行似乎隐含了每个 pipeline 里一定会有一个 sink node？
 
 
-#### Exchange 节点的处理
+#### Exchange
+
+##### Non pipeline
+会阻塞在
+
+
+##### Pipeline
+不会阻塞
+Exchange 接收来自其他 fragment 发送的数据，当其他节点准备好数据发送到当前 fragment 后，会设置一个数据 ready 的标志位，TaskScheduler 调度时当发现数据 ready 后才会让 exchange 节点去读内存中的数据。
+
+
+
+
+```txt {.line-numbers}
+mysql [test]>explain select id, reverse(c_array1) from array_test2 order by id;
+--------------
+explain select id, reverse(c_array1) from array_test2 order by id
+--------------
+
++-------------------------------------------------------------------------------+
+| Explain String(Nereids Planner)                                               |
++-------------------------------------------------------------------------------+
+| PLAN FRAGMENT 0                                                               |
+|   OUTPUT EXPRS:                                                               |
+|     id[#5]                                                                    |
+|     reverse(c_array1)[#6]                                                     |
+|   PARTITION: UNPARTITIONED                                                    |
+|                                                                               |
+|   HAS_COLO_PLAN_NODE: false                                                   |
+|                                                                               |
+|   VRESULT SINK                                                                |
+|      MYSQL_PROTOCAL                                                           |
+|                                                                               |
+|   136:VMERGING-EXCHANGE                                                       |
+|      offset: 0                                                                |
+|                                                                               |
+| PLAN FRAGMENT 1                                                               |
+|                                                                               |
+|   PARTITION: HASH_PARTITIONED: id[#0]                                         |
+|                                                                               |
+|   HAS_COLO_PLAN_NODE: false                                                   |
+|                                                                               |
+|   STREAM DATA SINK                                                            |
+|     EXCHANGE ID: 136                                                          |
+|     UNPARTITIONED                                                             |
+|                                                                               |
+|   133:VSORT                                                                   |
+|   |  order by: id[#5] ASC                                                     |
+|   |  offset: 0                                                                |
+|   |                                                                           |
+|   127:VOlapScanNode                                                           |
+|      TABLE: default_cluster:test.array_test2(array_test2), PREAGGREGATION: ON |
+|      partitions=1/1, tablets=1/1, tabletList=19062                            |
+|      cardinality=7, avgRowSize=1143.5714, numNodes=1                          |
+|      pushAggOp=NONE                                                           |
+|      projections: id[#0], reverse(c_array1[#1])                               |
+|      project output tuple id: 1                                               |
++-------------------------------------------------------------------------------+
+```
