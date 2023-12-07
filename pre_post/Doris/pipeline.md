@@ -1,4 +1,22 @@
-[TOC]
+
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
+
+<!-- code_chunk_output -->
+
+- [QUERY 管控](#query-管控)
+- [FE](#fe)
+  - [fragment 管控](#fragment-管控)
+- [BE](#be)
+  - [overall](#overall)
+  - [create pipeline tasks](#create-pipeline-tasks)
+  - [Sink 节点的处理](#sink-节点的处理)
+  - [Exchange](#exchange)
+    - [Non pipeline](#non-pipeline)
+    - [Pipeline](#pipeline)
+
+<!-- /code_chunk_output -->
+
+
 
 ### QUERY 管控
 
@@ -667,4 +685,36 @@ explain select id, reverse(c_array1) from array_test2 order by id
 |      projections: id[#0], reverse(c_array1[#1])                               |
 |      project output tuple id: 1                                               |
 +-------------------------------------------------------------------------------+
+```
+
+在构造 PipelineFragmentContext 的时候，接收两个 callback：
+```cpp {.line-numbers}
+class PipelineFragmentContext {
+    ...
+    using report_status_callback = std::function<void(const ReportStatusRequest)>;
+    PipelineFragmentContext(...
+                            ExecEnv* exec_env,
+                            const std::function<void(RuntimeState*, Status*)>& call_back,
+                            const report_status_callback& report_status_cb);
+}
+```
+
+```cpp {.line-numbers}
+Status FragmentMgr::exec_plan_fragment(const TPipelineFragmentParams& params,
+                                       const FinishCallback& cb)
+{
+    ...
+    std::shared_ptr<pipeline::PipelineFragmentContext> context =
+                std::make_shared<pipeline::PipelineFragmentContext>(
+                        query_ctx->query_id, fragment_instance_id, params.fragment_id,
+                        local_params.backend_num, query_ctx, _exec_env, cb,
+                        std::bind<void>(std::mem_fn(&FragmentMgr::coordinator_callback), this,
+                                        std::placeholders::_1));
+
+
+}
+
+void FragmentMgr::coordinator_callback(const ReportStatusRequest& req) {
+    
+}
 ```

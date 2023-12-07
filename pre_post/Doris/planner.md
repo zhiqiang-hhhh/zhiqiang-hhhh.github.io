@@ -35,8 +35,7 @@ public interface Plan extends TreeNode<Plan> {
     ...
 }
 ```
-每个 Plan 有一个 accept 方法，这是一个模板函数作用是，接收一个 PlanVisiter 对象，调用其 visiter 方法，这个visiter 方法将会把当前的 PhysicalPlan 转成一
-个 PlanFragment。
+每个 Plan 有一个 accept 方法，这是一个模板函数作用是，接收一个 PlanVisiter 对象，调用其 visiter 方法，这个visiter 方法将会把当前的 PhysicalPlan 转成一个 PlanFragment。
 
 比如 PhysicalOlapScan:
 ```java
