@@ -1,5 +1,32 @@
-[TOC]
 
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
+
+<!-- code_chunk_output -->
+
+- [ColumnConst](#columnconst)
+- [Methods](#methods)
+  - [Scatter](#scatter)
+
+<!-- /code_chunk_output -->
+
+## ColumnConst
+## ColumnNullable
+
+/// Class that specifies nullable columns. A nullable column represents
+/// a column, which may have any type, provided with the possibility of
+/// storing NULL values. For this purpose, a ColumNullable object stores
+/// an ordinary column along with a special column, namely a byte map,
+/// whose type is ColumnUInt8. The latter column indicates whether the
+/// value of a given row is a NULL or not. Such a design is preferred
+/// over a bitmap because columns are usually stored on disk as compressed
+/// files. In this regard, using a bitmap instead of a byte map would
+/// greatly complicate the implementation with little to no benefits.
+
+ColumnNullable 的注释很清晰了，ColumnNullable 包含两个列，一个普通列，一个 ColumnUInt8，后者用于指示前者的哪些行是 NULL。
+
+
+
+## Methods
 ### Scatter
 
 遍历当前列的每一行，按照某个规则将每一行都 scatter(散射) 到结果 `vector<IColumn::MutablePtr>` 的某一个位置。
