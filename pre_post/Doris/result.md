@@ -54,7 +54,7 @@ message PFetchDataRequest {
     optional bool resp_in_attachment = 2;
 };
 ```
-finst_id 是构造 receiver 时候产生的一个随机数，似乎乎是用来标记 receiver 的，完全搞不明白这个变量命名是啥意思。。。但是隐约能猜到该变量的作用：在 send framgent 的时候应该会带上该参数，用来标记本次 query，后续 fetch data 的时候 be 会根据该参数寻找相关的 result sender 数据结构。
+finst_id (fragment instance id), send framgent 的时候应该会带上该参数，用来标记本次 query，后续 fetch data 的时候 be 会根据该参数寻找相关的 result sender 数据结构。
 
 ```cpp
 void ResultBufferMgr::fetch_data(const PUniqueId& finst_id, GetResultBatchCtx* ctx)
