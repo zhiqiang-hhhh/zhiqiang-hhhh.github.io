@@ -519,32 +519,112 @@ TODO: submit 阶段什么情况下会有多个 task
 submit 阶段会把当前 fragment 下创建的所有 task 提交到全局的一个 task_schedule 中的线程池内。
 
 #### create pipeline tasks
-```cpp
+Fragment 是并行被执行的，每个并行执行的 fragment 被称为 instance。
+每个 Instance 可以包含多条 pipeline。
+![Alt text](img_v3_0263_bebccb3b-e0a5-465b-aa47-ae6c590faf2g.jpg)
+比如上图，每个虚线框都是一条 pipeline，每条 pipeline 包含一组 operator，这三条 pipeline 同属于一个 instance。
 
-```
+为什么还需要区分 instance？假设 fragment 需要读取不同的数据分区，那么不同的 instance 就有不同的 scan range，因此这里有了 instance 的概念。换句话说，不同的 instance 的结构是相同的，但是他们的入参可能不同。
 
+简化讨论，我们假设只有一个 tablet，那么就只会有一个 instance。上图将会有三条 pipeline，那么就是三个 pipeline task。具体这三条 pipeline 是怎么创建的，参考 `PipelineFragmentContext::_build_pipelines` 函数。
 
+PipelineTask 是 doris BE 上查询执行时的调度与执行单元。TaskScheduler 每次执行一个 PipelineTask，根据其执行结果状态判断其下一步是继续执行还是放进 BlockedTaskScheduler。
 ```cpp
 class PipelipeTask {
-
+private:
+    Operators _operators; // left is _source, right is _root
+    OperatorPtr _source;
+    OperatorPtr _root;
+    OperatorPtr _sink;
+public:
+    ...
 }
 ```
+每个 PipelineTask 都有上述四个重要的数据成员。
+```cpp
+PipelineTask::PipelineTask(PipelinePtr& pipeline, uint32_t index, RuntimeState* state,
+                           OperatorPtr& sink, PipelineFragmentContext* fragment_context,
+                           RuntimeProfile* parent_profile)
+        : _index(index),
+          _pipeline(pipeline),
+          _prepared(false),
+          _opened(false),
+          _state(state),
+          _cur_state(PipelineTaskState::NOT_READY),
+          _data_state(SourceState::DEPEND_ON_SOURCE),
+          _fragment_context(fragment_context),
+          _parent_profile(parent_profile),
+          _operators(pipeline->_operators),
+          _source(_operators.front()),
+          _root(_operators.back()),
+          _sink(sink)
+{
+    ...
+}
+```
+```cpp
+template <typename OperatorBuilderType>
+class SourceOperator : public StreamingOperator<OperatorBuilderType> {
+public:
+    using NodeType =
+            std::remove_pointer_t<decltype(std::declval<OperatorBuilderType>().exec_node())>;
 
-```plantuml
-@startuml
-class FragmentExecState {
-    - _executor : PlanFragmentExecutor
-    + report_status_callback_impl : std::function<void(const ReportStatusRequest)>
-    + FragmentExecState(..., report_status_callback_impl);
+    SourceOperator(OperatorBuilderBase* builder, ExecNode* node)
+            : StreamingOperator<OperatorBuilderType>(builder, node) {}
+
+    ~SourceOperator() override = default;
+
+    Status get_block(RuntimeState* state, vectorized::Block* block,
+                     SourceState& source_state) override {
+        auto& node = StreamingOperator<OperatorBuilderType>::_node;
+        bool eos = false;
+        RETURN_IF_ERROR(node->get_next_after_projects(
+                state, block, &eos,
+                std::bind(&ExecNode::pull, node, std::placeholders::_1, std::placeholders::_2,
+                          std::placeholders::_3)));
+        source_state = eos ? SourceState::FINISHED : SourceState::DEPEND_ON_SOURCE;
+        return Status::OK();
+    }
+};
+
+[[nodiscard]] virtual Status pull(RuntimeState* state, vectorized::Block* output_block,
+                                      bool* eos)
+{
+    return get_next(state, output_block, eos);
 }
 
-FragmentExecState o--PlanFragmentExecutor
-
-class PlanFragmentExecutor {
-    - report_status_callback : std::function<void(const Status&, RuntimeProfile*, RuntimeProfile*, bool)>
-    + PlanFragmentExecutor(..., report_status_callback);
+Status ExecNode::get_next(RuntimeState* state, vectorized::Block* block, bool* eos) {
+    return Status::NotSupported("Not Implemented get block");
 }
-@enduml
+
+template <bool is_intersect>
+Status VSetOperationNode<is_intersect>::get_next(RuntimeState* state, Block* output_block,
+                                                 bool* eos) {
+    SCOPED_TIMER(_runtime_profile->total_time_counter());
+    return pull(state, output_block, eos);
+}
+
+template <bool is_intersect>
+Status VSetOperationNode<is_intersect>::pull(RuntimeState* state, Block* output_block, bool* eos) {
+    SCOPED_TIMER(_exec_timer);
+    SCOPED_TIMER(_pull_timer);
+    create_mutable_cols(output_block);
+    auto st = std::visit(
+            [&](auto&& arg) -> Status {
+                using HashTableCtxType = std::decay_t<decltype(arg)>;
+                if constexpr (!std::is_same_v<HashTableCtxType, std::monostate>) {
+                    return get_data_in_hashtable<HashTableCtxType>(arg, output_block,
+                                                                   state->batch_size(), eos);
+                } else {
+                    LOG(FATAL) << "FATAL: uninited hash table";
+                }
+            },
+            *_hash_table_variants);
+    RETURN_IF_ERROR(st);
+    RETURN_IF_ERROR(VExprContext::filter_block(_conjuncts, output_block, output_block->columns()));
+    reached_limit(output_block, eos);
+    return Status::OK();
+}
 ```
 在 `PlanFragmentExecutor::open()` 执行时，
 1. 给 report thread pool 提交一个 task，该 task 会执行到 `PlanFragmentExecutor::send_report(false);` 用于在 Fragment 执行期间进行汇报
@@ -624,8 +704,6 @@ Status PipelineFragmentContext::_build_pipeline_tasks(
     return Status::OK();
 }
 ```
-这里第 6 行似乎隐含了每个 pipeline 里一定会有一个 sink node？
-
 
 #### Exchange
 
