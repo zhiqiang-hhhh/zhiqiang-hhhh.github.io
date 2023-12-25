@@ -1,4 +1,25 @@
-Doris 有新优化 Nerieds 和老优化器，以新优化器为例子说明。
+```java
+public class StmtExecutor {
+    private void executeByNereids(queryId) throws Exception {
+        ...
+        planner = new NereidsPlanner(statementContext);
+        try {
+            planner.plan(parsedStmt, context.getSessionVariable().toThrift());
+            checkBlockRules();
+        }
+        ...
+        handleQueryWithRetry(queryId);
+    }
+}
+
+public class NereidsPlanner extends Planner {
+    ...
+    Plan resultPlan = plan(parsedPlan, requireProperties, explainLevel);
+}
+
+```
+
+
 
 ```java{.line-numbers}
 public class NereidsPlanner extends Planner {
@@ -64,3 +85,8 @@ PhysicalPlanTranslator 就是一个 PlanVisiter 对象，它实现了 visitPhysi
         return planFragment;
     }
 ```
+
+
+if (!conjuncts.isEmpty()) {
+                output.append("\n").append(prefix).append("PREDICATES: ").append(conjuncts.size()).append("\n");
+            }

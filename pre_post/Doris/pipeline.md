@@ -9,6 +9,7 @@
 - [BE](#be)
   - [overall](#overall)
   - [create pipeline tasks](#create-pipeline-tasks)
+  - [SetOperator](#setoperator)
   - [Sink 节点的处理](#sink-节点的处理)
   - [Exchange](#exchange)
     - [Non pipeline](#non-pipeline)
@@ -522,6 +523,7 @@ submit 阶段会把当前 fragment 下创建的所有 task 提交到全局的一
 Fragment 是并行被执行的，每个并行执行的 fragment 被称为 instance。
 每个 Instance 可以包含多条 pipeline。
 ![Alt text](img_v3_0263_bebccb3b-e0a5-465b-aa47-ae6c590faf2g.jpg)
+
 比如上图，每个虚线框都是一条 pipeline，每条 pipeline 包含一组 operator，这三条 pipeline 同属于一个 instance。
 
 为什么还需要区分 instance？假设 fragment 需要读取不同的数据分区，那么不同的 instance 就有不同的 scan range，因此这里有了 instance 的概念。换句话说，不同的 instance 的结构是相同的，但是他们的入参可能不同。
@@ -542,26 +544,17 @@ public:
 ```
 每个 PipelineTask 都有上述四个重要的数据成员。
 ```cpp
-PipelineTask::PipelineTask(PipelinePtr& pipeline, uint32_t index, RuntimeState* state,
-                           OperatorPtr& sink, PipelineFragmentContext* fragment_context,
-                           RuntimeProfile* parent_profile)
-        : _index(index),
-          _pipeline(pipeline),
-          _prepared(false),
-          _opened(false),
-          _state(state),
-          _cur_state(PipelineTaskState::NOT_READY),
-          _data_state(SourceState::DEPEND_ON_SOURCE),
-          _fragment_context(fragment_context),
-          _parent_profile(parent_profile),
-          _operators(pipeline->_operators),
-          _source(_operators.front()),
-          _root(_operators.back()),
-          _sink(sink)
-{
-    ...
+Status PipelineTask::execute(bool* eos) {
+    if (!_opend()) {
+        
+    }
 }
 ```
+
+
+
+
+#### SetOperator
 ```cpp
 template <typename OperatorBuilderType>
 class SourceOperator : public StreamingOperator<OperatorBuilderType> {
@@ -632,7 +625,7 @@ Status VSetOperationNode<is_intersect>::pull(RuntimeState* state, Block* output_
 
 #### Sink 节点的处理
 
-```cpp
+```cpp {.line-numbers}
 PipelineFragmentContext::prepare(const doris::TPipelineFragmentParams& request)
 {
     ...
@@ -668,9 +661,10 @@ Status PipelineFragmentContext::_create_sink(int sender_id, const TDataSink& thr
 }
 
 ```
+第 32 行，说明执行 sink 任务的pipeline，永远是 root_pipeline。
 
-对于 F00，这里会创建 ResultSinkOperatorBuild
-对于 F01，这里会创建 ExchangeSinkOperatorBuilder
+
+
 
 ```cpp {.line-numbers}
 Status PipelineFragmentContext::_build_pipeline_tasks(
@@ -715,84 +709,3 @@ Status PipelineFragmentContext::_build_pipeline_tasks(
 不会阻塞
 Exchange 接收来自其他 fragment 发送的数据，当其他节点准备好数据发送到当前 fragment 后，会设置一个数据 ready 的标志位，TaskScheduler 调度时当发现数据 ready 后才会让 exchange 节点去读内存中的数据。
 
-
-
-
-```txt {.line-numbers}
-mysql [test]>explain select id, reverse(c_array1) from array_test2 order by id;
---------------
-explain select id, reverse(c_array1) from array_test2 order by id
---------------
-
-+-------------------------------------------------------------------------------+
-| Explain String(Nereids Planner)                                               |
-+-------------------------------------------------------------------------------+
-| PLAN FRAGMENT 0                                                               |
-|   OUTPUT EXPRS:                                                               |
-|     id[#5]                                                                    |
-|     reverse(c_array1)[#6]                                                     |
-|   PARTITION: UNPARTITIONED                                                    |
-|                                                                               |
-|   HAS_COLO_PLAN_NODE: false                                                   |
-|                                                                               |
-|   VRESULT SINK                                                                |
-|      MYSQL_PROTOCAL                                                           |
-|                                                                               |
-|   136:VMERGING-EXCHANGE                                                       |
-|      offset: 0                                                                |
-|                                                                               |
-| PLAN FRAGMENT 1                                                               |
-|                                                                               |
-|   PARTITION: HASH_PARTITIONED: id[#0]                                         |
-|                                                                               |
-|   HAS_COLO_PLAN_NODE: false                                                   |
-|                                                                               |
-|   STREAM DATA SINK                                                            |
-|     EXCHANGE ID: 136                                                          |
-|     UNPARTITIONED                                                             |
-|                                                                               |
-|   133:VSORT                                                                   |
-|   |  order by: id[#5] ASC                                                     |
-|   |  offset: 0                                                                |
-|   |                                                                           |
-|   127:VOlapScanNode                                                           |
-|      TABLE: default_cluster:test.array_test2(array_test2), PREAGGREGATION: ON |
-|      partitions=1/1, tablets=1/1, tabletList=19062                            |
-|      cardinality=7, avgRowSize=1143.5714, numNodes=1                          |
-|      pushAggOp=NONE                                                           |
-|      projections: id[#0], reverse(c_array1[#1])                               |
-|      project output tuple id: 1                                               |
-+-------------------------------------------------------------------------------+
-```
-
-在构造 PipelineFragmentContext 的时候，接收两个 callback：
-```cpp {.line-numbers}
-class PipelineFragmentContext {
-    ...
-    using report_status_callback = std::function<void(const ReportStatusRequest)>;
-    PipelineFragmentContext(...
-                            ExecEnv* exec_env,
-                            const std::function<void(RuntimeState*, Status*)>& call_back,
-                            const report_status_callback& report_status_cb);
-}
-```
-
-```cpp {.line-numbers}
-Status FragmentMgr::exec_plan_fragment(const TPipelineFragmentParams& params,
-                                       const FinishCallback& cb)
-{
-    ...
-    std::shared_ptr<pipeline::PipelineFragmentContext> context =
-                std::make_shared<pipeline::PipelineFragmentContext>(
-                        query_ctx->query_id, fragment_instance_id, params.fragment_id,
-                        local_params.backend_num, query_ctx, _exec_env, cb,
-                        std::bind<void>(std::mem_fn(&FragmentMgr::coordinator_callback), this,
-                                        std::placeholders::_1));
-
-
-}
-
-void FragmentMgr::coordinator_callback(const ReportStatusRequest& req) {
-    
-}
-```
