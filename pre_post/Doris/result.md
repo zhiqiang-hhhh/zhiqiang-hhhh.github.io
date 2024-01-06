@@ -1,3 +1,6 @@
+对于每个 query，只有一个 result sink operator，并且这个 operator 所在的 fragment 也只有一个 instance。
+所以一个 query 在 FE 上只有一个 Result Receiver 对象。
+
 Fe 上 Coordinator 会构造一个 receiver
 ```java
 public class StmtExecutor {
@@ -17,10 +20,26 @@ public class StmtExecutor {
     }
 }
 
-
-
 public class Coordinator {
     ...
+    public void exec() throws Exception {
+        ...
+
+        QeProcessorImpl.INSTANCE.registerInstances(queryId, instanceIds.size());
+
+        // create result receiver
+        PlanFragmentId topId = fragments.get(0).getFragmentId();
+        FragmentExecParams topParams = fragmentExecParamsMap.get(topId);
+        DataSink topDataSink = topParams.fragment.getSink();
+        this.timeoutDeadline = System.currentTimeMillis() + queryOptions.getExecutionTimeout() * 1000L;
+        if (topDataSink instanceof ResultSink || topDataSink instanceof ResultFileSink) {
+            TNetworkAddress execBeAddr = topParams.instanceExecParams.get(0).host;
+            receiver = new ResultReceiver(queryId, topParams.instanceExecParams.get(0).instanceId,
+                    addressToBackendID.get(execBeAddr), toBrpcHost(execBeAddr), this.timeoutDeadline);  
+            ...
+        }
+    }
+
     public RowBatch getNext() {
         ...
         resultBatch = receiver.getNext(status);
@@ -54,9 +73,24 @@ message PFetchDataRequest {
     optional bool resp_in_attachment = 2;
 };
 ```
-finst_id (fragment instance id), send framgent 的时候应该会带上该参数，用来标记本次 query，后续 fetch data 的时候 be 会根据该参数寻找相关的 result sender 数据结构。
+
+BE 上每次 fetchData RPC 将会在 _heavy_work_threadpool 中增加一个 task，
 
 ```cpp
+void PInternalServiceImpl::fetch_data(google::protobuf::RpcController* controller,
+                                      const PFetchDataRequest* request, PFetchDataResult* result,
+                                      google::protobuf::Closure* done) {
+    bool ret = _heavy_work_pool.try_offer([this, controller, request, result, done]() {
+        brpc::Controller* cntl = static_cast<brpc::Controller*>(controller);
+        GetResultBatchCtx* ctx = new GetResultBatchCtx(cntl, result, done);
+        _exec_env->result_mgr()->fetch_data(request->finst_id(), ctx);
+    });
+    if (!ret) {
+        offer_failed(result, done, _heavy_work_pool);
+        return;
+    }
+}
+
 void ResultBufferMgr::fetch_data(const PUniqueId& finst_id, GetResultBatchCtx* ctx)
 {
     TUniqueId tid;
@@ -71,10 +105,10 @@ void ResultBufferMgr::fetch_data(const PUniqueId& finst_id, GetResultBatchCtx* c
     cb->get_batch(ctx);
 }
 
-std::shared_ptr<BufferControlBlock> ResultBufferMgr::find_control_block(const TUniqueId& query_id) {
+std::shared_ptr<BufferControlBlock> ResultBufferMgr::find_control_block(const TUniqueId& instance_id) {
     // TODO(zhaochun): this lock can be bottleneck?
     std::lock_guard<std::mutex> l(_lock);
-    BufferMap::iterator iter = _buffer_map.find(query_id);
+    BufferMap::iterator iter = _buffer_map.find(instance_id);
 
     if (_buffer_map.end() != iter) {
         return iter->second;
@@ -82,10 +116,7 @@ std::shared_ptr<BufferControlBlock> ResultBufferMgr::find_control_block(const TU
 
     return std::shared_ptr<BufferControlBlock>();
 }
-
 ```
-好吧，这个参数实际上是 query_id！头疼。
-
 看一下这个 BufferControlBlock 是啥时候构造的：
 ```cpp
 Status ResultBufferMgr::create_sender(const TUniqueId& query_id, int buffer_size,
@@ -160,19 +191,8 @@ Status PipelineFragmentContext::prepare(const doris::TPipelineFragmentParams& re
 ```
 也就是说在 `PipelineFragmentContext::prepare` 执行时，会构造 VResultSink 对象，该对象保存在 `PipelineFragmentContext::_sink` 中
 
-构造该对象之后，
-```cpp
-Status PipelineFragmentContext::_build_pipeline_tasks(
-    const doris::TPipelineFragmentParams& request) {
-    ...
-    for (auto& task : _tasks) {
-        RETURN_IF_ERROR(task->prepare(_runtime_state.get()));
-    }
-    ...
-}
-```
-这里 task::prepare 函数里会调用 VResultSink::prepare，最后执行到 `ResultBufferMgr::create_sender` 创建 PipBufferControlBlock，并且把该对象添加到 ResultBufferMgr 中。
 
+### Buffer Control Block
 
 ```cpp
 void ResultBufferMgr::fetch_data(const PUniqueId& finst_id, GetResultBatchCtx* ctx) {
@@ -217,3 +237,76 @@ void BufferControlBlock::get_batch(GetResultBatchCtx* ctx) {
     _waiting_rpc.push_back(ctx);
 }
 ```
+另一边，当有数据到来时:
+```cpp
+Status BufferControlBlock::add_batch(std::unique_ptr<TFetchDataResult>& result) {
+    std::unique_lock<std::mutex> l(_lock);
+
+    if (_is_cancelled) {
+        return Status::Cancelled("Cancelled");
+    }
+
+    int num_rows = result->result_batch.rows.size();
+
+    while ((!_fe_result_batch_queue.empty() && _buffer_rows > _buffer_limit) && !_is_cancelled) {
+        _data_removal.wait_for(l, std::chrono::seconds(1));
+    }
+
+    if (_is_cancelled) {
+        return Status::Cancelled("Cancelled");
+    }
+
+    if (_waiting_rpc.empty()) {
+        // Merge result into batch to reduce rpc times
+        if (!_fe_result_batch_queue.empty() &&
+            ((_fe_result_batch_queue.back()->result_batch.rows.size() + num_rows) <
+             _buffer_limit) &&
+            !result->eos) {
+            std::vector<std::string>& back_rows = _fe_result_batch_queue.back()->result_batch.rows;
+            std::vector<std::string>& result_rows = result->result_batch.rows;
+            back_rows.insert(back_rows.end(), std::make_move_iterator(result_rows.begin()),
+                             std::make_move_iterator(result_rows.end()));
+        } else {
+            _fe_result_batch_queue.push_back(std::move(result));
+        }
+        _buffer_rows += num_rows;
+    } else {
+        auto ctx = _waiting_rpc.front();
+        _waiting_rpc.pop_front();
+        ctx->on_data(result, _packet_num);
+        _packet_num++;
+    }
+    return Status::OK();
+}
+
+void GetResultBatchCtx::on_data(const std::unique_ptr<TFetchDataResult>& t_result,
+                                int64_t packet_seq, bool eos) {
+    Status st = Status::OK();
+    if (t_result != nullptr) {
+        uint8_t* buf = nullptr;
+        uint32_t len = 0;
+        ThriftSerializer ser(false, 4096);
+        st = ser.serialize(&t_result->result_batch, &len, &buf);
+        if (st.ok()) {
+            _result->set_row_batch(std::string((const char*)buf, len));
+            _result->set_packet_seq(packet_seq);
+            _result->set_eos(eos);
+        } else {
+            LOG(WARNING) << "TFetchDataResult serialize failed, errmsg=" << st;
+        }
+    } else {
+        _result->set_empty_batch(true);
+        _result->set_packet_seq(packet_seq);
+        _result->set_eos(eos);
+    }
+    st.to_protobuf(_result->mutable_status());
+    { _done->Run(); }
+    delete this;
+}
+```
+执行的是 GetResultBatchCtx::on_data(...)，把一个 TFetchDataResult 对象序列化成 PFetchDataResult 的 row_batch 字段。并且添加一些其他的控制参数。
+
+
+
+### 异常控制流
+

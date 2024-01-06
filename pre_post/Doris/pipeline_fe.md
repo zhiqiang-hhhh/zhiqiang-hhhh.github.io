@@ -1,4 +1,3 @@
-precondition：fragment 节点的数量需要大于 1（WHY？），因此最后收集结果的节点一定有一个 ResultSink 和一个 VExchange 节点。
 ```sql
 mysql [(none)]>explain select * from demo.example_tbl;
 +---------------------------------------------------------------------------------------------------------------+
