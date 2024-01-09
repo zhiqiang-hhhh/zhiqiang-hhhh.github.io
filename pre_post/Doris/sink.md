@@ -1,3 +1,17 @@
+
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
+
+<!-- code_chunk_output -->
+
+- [Sink](#sink)
+    - [OLAPTableSink](#olaptablesink)
+      - [TabletWriter](#tabletwriter)
+      - [try_close & close](#try_close--close)
+
+<!-- /code_chunk_output -->
+
+
+
 # Sink
 
 ```plantuml
@@ -21,8 +35,16 @@ class AsyncWriterSink implements DataSink
 class VResultFileSink implements AsyncWriterSink
 class VDataStreamSender implements DataSink
 class VFileResultWriter implements AsyncResultWriter
+class VMysqlTableWriter implements AsyncResultWriter
+class VOdbcTableWriter implements AsyncResultWriter
+class VJdbcTableWriter implements AsyncResultWriter
+class VTabletWriter implements AsyncResultWriter
 class AsyncResultWriter extends ResultWriter
 class VOlapTableSink implements AsyncWriterSink
+class VOdbcTableSink implements AsyncWriterSink
+class VMysqlTableSink implements AsyncWriterSink
+class VJdbcTableSink implements AsyncWriterSink
+
 
 PipelineTask *-- OperatorBase
 ExchangeSinkOperator *-- ExchangeSinkBuffer
@@ -33,6 +55,10 @@ ResultFileSinkOperator *-- VResultFileSink
 ExchangeSinkOperator *-- VDataStreamSender 
 ExchangeSourceOperator *-- VExchangeNode
 VResultFileSink *-- VFileResultWriter
+VMysqlTableSink *-- VMysqlTableWriter
+VOdbcTableSink *-- VOdbcTableWriter
+VJdbcTableSink *-- VJdbcTableWriter
+VOlapTableSink *-- VTabletWriter
 
 interface OperatorBase {
     + {abstract} is_sink() : bool
@@ -194,6 +220,36 @@ class VFileResultWriter {
 
 class VOlapTableSink <VTabletWriter> {
     
+}
+
+class VJdbcTableSink <VJdbcTableWriter> {
+    
+}
+
+class VOdbcTableSink <VOdbcTableWriter> {
+    
+}
+
+class VMysqlTableSink <VMysqlTableWriter> {
+    
+}
+
+class VMysqlTableWriter {
+}
+
+class VTabletWriter {
+    - _send_batch_process() : void
+    - _channel : IndexChannel
+    - _index_id_to_channel Map<id, IndexChannel>
+}
+
+VtabletWriter *-- IndexChannel
+
+class IndexChannel {
+    - _index_id : int
+    - _tablets_by_channel : Map<BeId, Set<TabletId>>
+    - _node_channels : Map<BeId, VNodeChannelPtr>
+    - _channels_by_tablet : Map<TableId, Vector<VNodeChannelPtr>>
 }
 
 @enduml
@@ -495,4 +551,81 @@ void AsyncResultWriter::process_block(RuntimeState* state, RuntimeProfile* profi
         _finish_dependency->set_ready();
     }
 }
+```
+
+
+
+### OLAPTableSink
+#### TabletWriter
+
+TabletWriter 并不是绑定到某一个 tablet，甚至不是某一个 table，而是对应本次 insert 需要涉及到的所有目标表。比如 table 绑定了一个物化视图，那么 TabletWriter 就需要把这个 batch 按照预先的 schema 定义写到 table + 物化视图中。
+
+IndexChannel: 除了普通表之外，还有物化视图等其他类型的表，当关联其他类型的表时，一行数据可能需要写到多个表中，这里的 Index 就表示的是每个类型的需要写入的表。
+
+NodeChannel: 由于每一张表都是一个分布式表，对于 TableSink 节点来说，它需要把数据写入到多个分布式表。而 Doris 是按照 Be 来组织分布式表的，所以这里的每个 NodeChannel 就是对应一个 Be，表示需要把一个 Batch 发送到这个 Be 上。
+
+```cpp
+Status VTabletWriter::append_block(const Block& block)
+{
+    // Step 1. Generate row distribution
+    ...
+    std::shared_ptr<vectorized::Block> block;
+    RETURN_IF_ERROR(_row_distribution.generate_rows_distribution(
+            input_block, block, ...));
+
+    // Step 2. Generate_index_channels_payloads
+    _generate_index_channels_payloads(_row_part_tablet_ids, channel_to_payload);
+    ...
+
+    // Step 3. Add block to node channel
+    for (size_t i = 0; i < _channels.size(); i++) {
+        std::unordered_map<VNodeChannel*, Payload>& channel_to_payload_entry =
+                channel_to_payload[i];
+        for (auto& pair : channel_to_payload_entry) {
+            // if this node channel is already failed, this add_row will be skipped
+            VNodeChannel* node_channel_ptr = pair.first;
+            const Payload& payload = pair.second; //   [row -> tablet] mapping
+            // if it is load single tablet, then append this whole block
+            auto st =
+                    node_channel_ptr->add_block(block.get(), &payload, load_block_to_single_tablet);
+            if (!st.ok()) {
+                _channels[i]->mark_as_failed(node_channel_ptr, st.to_string());
+            }
+        }
+    }
+
+}
+```
+#### try_close & close
+```cpp {.line-numbers}
+class AsyncWriterSink {
+    ...
+    bool can_write() override { return _writer->can_write(); }
+
+    bool is_close_done() override { return !_writer->is_pending_finish(); }
+
+    Status try_close(RuntimeState* state, Status exec_status) override {
+        if (state->is_cancelled() || !exec_status.ok()) {
+            _writer->force_close(!exec_status.ok() ? exec_status : Status::Cancelled("Cancelled"));
+        }
+        return Status::OK();
+    }
+
+    Status close(RuntimeState* state, Status exec_status) override {
+        // if the init failed, the _writer may be nullptr. so here need check
+        if (_writer) {
+            if (_writer->need_normal_close()) {
+                if (exec_status.ok() && !state->is_cancelled()) {
+                    RETURN_IF_ERROR(_writer->commit_trans());
+                }
+                RETURN_IF_ERROR(_writer->close(exec_status));
+            } else {
+                RETURN_IF_ERROR(_writer->get_writer_status());
+            }
+        }
+        return DataSink::close(state, exec_status);
+    }
+}
+
+class OLAPTableSink
 ```
