@@ -1,0 +1,80 @@
+
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
+
+<!-- code_chunk_output -->
+
+- [defaultImplementationForNulls](#defaultimplementationfornulls)
+- [defaultImplementationForConstantArguments](#defaultimplementationforconstantarguments)
+
+<!-- /code_chunk_output -->
+
+### defaultImplementationForNulls
+```cpp
+/** Default implementation in presence of Nullable arguments or NULL constants as arguments is the following:
+*  if some of arguments are NULL constants then return NULL constant,
+*  if some of arguments are Nullable, then execute function as usual for columns,
+*   where Nullable columns are substituted with nested columns (they have arbitrary values in rows corresponding to NULL value)
+*   and wrap result in Nullable column where NULLs are in all rows where any of arguments are NULL.
+*/
+```
+
+首先思考一下，如果一个 Function 处理的参数可能包含 Nullable 列，那么需要怎么做。Nullable 列可能是：
+1. NULL constants
+2. NullableColumn
+
+对于第一种情况，最可能的处理是我们直接返回 NULL constant。对于第二种情况，我们可能会先得到 NestedColumn，然后处理 NestedColumn，并且绝大多数情况下，返回值类型也会是 NullableColumn，所以我们会把结果包在 NullableColumn 中返回。
+`defaultImplementationForNulls` 就是把上述了逻辑实现成一个公共函数，如果你需要使用这种默认处理，那么只要在实现函数时，重载
+让其返回 true 即可 (默认就是 true)。
+
+```cpp
+bool useDefaultImplementationForNulls() const { return true; }
+```
+`defaultImplementationForNulls` 的实现还是比较简单的，很清晰，不多写了。
+
+### defaultImplementationForConstantArguments
+
+创建 `defaultImplementationForConstantArguments` 的目的与 `defaultImplementationForNulls` 一样，都是抽象出公共逻辑。 不过 `defaultImplementationForConstantArguments` 准确说其实是对于当实际入参全为Constant时的优化。
+
+假设定义了函数 Function(A, B)，其中 A 必须为 Constant，B 是 Int64。如果在运行中，B 为非 Constant，那么我们只能老老实实按行计算。但是，如果 B 实际上是套了一个 ColumnConst 的 ColumnInt64，那么我们可以只计算一次 Funciton(A, B)，然后将结果拷贝实际的行数个。
+
+`defaultImplementationForConstantArguments` 就是将上述优化做成公共逻辑。
+
+```cpp {.line-numbers}
+ColumnPtr IExecutableFunction::defaultImplementationForConstantArguments(
+    const ColumnsWithTypeAndName & args, const DataTypePtr & result_type, size_t input_rows_count, bool dry_run) const
+{
+    // Step 0 确保入参满足函数签名
+    ColumnNumbers arguments_to_remain_constants = getArgumentsThatAreAlwaysConstant();
+    /// Check that these arguments are really constant.
+    ...
+
+    // Step 1 确保满足进行优化的条件
+    if (args.empty() || !useDefaultImplementationForConstants() || !allArgumentsAreConstants(args))
+        return nullptr;
+
+    // Step 2 把 input_rows_count 行的全 Const 入参转为行数为 1 的 入参
+    ColumnsWithTypeAndName temporary_columns;
+
+    for (arg : args) {
+        if (arg must be ConstColumn) {
+            temporary_columns.push_back(arg->cloneReseized(1));
+        } else {
+            nested_col = assert_cast<ColumnConstant>(arg);
+            temporary_columns.push_back(nested_col);
+        }
+    }
+
+    // Step 3 把结果拷贝 n 次
+    return ColumnConst::create(result_column, input_rows_count);
+}
+```
+注意， 这里 ConstColumn 实际行数是 input_rows_count，所以需要复制 1 个元素后在添加到 temporary_columns 中。而 else 分支里的 ColumnConstant
+```cpp
+if (arg must be ConstColumn) {
+    temporary_columns.push_back(arg->cloneReseized(1));
+} else {
+    nested_col = assert_cast<ColumnConstant>(arg);
+    temporary_columns.push_back(nested_col->getDataColumnPtr());
+}
+```
+
