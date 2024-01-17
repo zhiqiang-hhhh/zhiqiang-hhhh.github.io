@@ -15,7 +15,7 @@
 
     Process each operation above parallel, across multiple nodes.
 
-比如有个查询要求对table排序，假设数据已经在多个磁盘上按照某个属性进行了range分区，并且 order by 字段正是在这个属性上，那么我们可以把 sort operation 实现成：1. 并行对每个 partition 排序；2. 对最终结果进行 concatenation
+比如有个查询要求对 table 排序，假设数据已经在多个磁盘上按照某个属性进行了 range 分区，并且 order by 字段正是在这个属性上，那么我们可以把 sort operation 实现成：1. 并行对每个 partition 排序；2. 对最终结果进行 concatenation
 
 * Interoperation parallelism
 
@@ -33,7 +33,7 @@ Suppose that we wish to sort a relation r that resides on n nodes N1, N2, ... , 
 关键：能够在多个 node 上均匀地进行 range partition —— Virtual node partition。
 
 ### Parallel External Sort-Merge
-假设数据已经在多个node之间分区，那么 Parallel external sort-merge 的步骤是：
+假设数据已经在多个 node 之间分区，那么 Parallel external sort-merge 的步骤是：
 1. 每个 node 在本地基于 order by 目标列对其数据进行排序
 2. 系统对多个 node 上已经排序好的多个 partition 进行并行排序
 

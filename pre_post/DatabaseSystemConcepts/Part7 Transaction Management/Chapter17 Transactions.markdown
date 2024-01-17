@@ -8,18 +8,18 @@ A transaction is a unit of program execution that accesses and possibly updates 
 事务的四个重要特性：
 * Atomicity 事务的所有操作不然全部都反应在数据库中，不然全部都不。
 * Consistency 单独执行事务可以保持数据库的一致性。Logically correct
-* Isolation 即使多个事务并发执行，系统也需要保证，对于每一对事务Ti和Tj，无论Tj在Ti开始之前就结束，还是Tj在Ti结束之后才开始，对于Ti来说，它不会被系统中其他并发执行的事务影响。
-* Durability 当某个事务成功完成后，即使遇到system failures，它所做出的变化也需要持久化到数据库中
+* Isolation 即使多个事务并发执行，系统也需要保证，对于每一对事务 Ti 和 Tj，无论 Tj 在 Ti 开始之前就结束，还是 Tj 在 Ti 结束之后才开始，对于 Ti 来说，它不会被系统中其他并发执行的事务影响。
+* Durability 当某个事务成功完成后，即使遇到 system failures，它所做出的变化也需要持久化到数据库中
 
-以上统称为ACID
+以上统称为 ACID
 
 ## A Simple Transaction Model
 * read(X), transfers data item X from database to a variable, also called X, in a buffer in memory belonging to the transaction that executed the read operation
 * write(X), treansfers the value of variable X in the main-memory buffer of the transaction that executed the write to the data item X in the database.
 
-**当前，我们先假设 write(X) 能够成功将X写入磁盘**
+**当前，我们先假设 write(X) 能够成功将 X 写入磁盘**
 
-事务Ti：从账户A转账$50到账户B
+事务 Ti：从账户 A 转账$50 到账户 B
 
     Ti: read(A);
         A := A - 50

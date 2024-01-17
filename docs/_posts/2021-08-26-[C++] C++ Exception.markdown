@@ -7,11 +7,11 @@ categories: jekyll update
 
 # C++ Exception 性能测试与实现浅探
 [TOC]
-很多编程语言中都有 Exception 机制。利用 Exception 机制，一段代码可以绕过正常的代码执行路径去通知另一段代码，有一些意外事件或者错误情况发生。另一种常见的异常/错误处理机制是ErrorCode，熟悉 C 语言的同学应该体会很深，比如操作系统提供的接口很多都是以 ErrorCode 的形式判断是否发生异常。
+很多编程语言中都有 Exception 机制。利用 Exception 机制，一段代码可以绕过正常的代码执行路径去通知另一段代码，有一些意外事件或者错误情况发生。另一种常见的异常/错误处理机制是 ErrorCode，熟悉 C 语言的同学应该体会很深，比如操作系统提供的接口很多都是以 ErrorCode 的形式判断是否发生异常。
 
 C++ 并不像 Java 一样强制程序员使用 Exception，但是在 C++ 中处理 Exception 是不可避免的，比如当内存不足时，new 操作符会抛出`std::bad_alloc`。同时在 C++ 中单纯使用 ErrorCode 来标记异常情况也有其他问题：
-1. ErrorCode 没有统一标准，没有严格标准规定到底是返回使用-1表示Error还是使用0表示Error，所以你需要额外配合使用枚举；
-2. ErrorCode 可能会被忽略，虽然C++17中有了`[[nodiscard]]`属性，但是你还是有可能会忘记加 nodiscard！毕竟忘记加 nodiscard 并不比忘记处理 ErrorCode 难多少。。
+1. ErrorCode 没有统一标准，没有严格标准规定到底是返回使用 -1 表示 Error 还是使用 0 表示 Error，所以你需要额外配合使用枚举；
+2. ErrorCode 可能会被忽略，虽然 C++17 中有了`[[nodiscard]]`属性，但是你还是有可能会忘记加 nodiscard！毕竟忘记加 nodiscard 并不比忘记处理 ErrorCode 难多少。。
 
 因此，掌握 C++ Exception 的原理以及正确使用方式是非常必要的。同时 C++ 目前依然是在高性能编程场景下的首选编程序言，很多同学出于性能考虑不敢使用 C++ Exception，只知道 Exception 慢，但是并不知道到底是为什么慢，究竟慢在哪里。
 
@@ -162,7 +162,7 @@ BM_exitWithErrorCodeWithinTry        113 ns          113 ns      6230807
 
 前一节我们验证了 C++ Exception 在频繁发生异常的情况下会导致程序性能变慢的现象，这一节开始我们尝试去寻找导致这一现象的原因。
 
-首先，Exception 机制的实现位于C++标准库中，而由于 C 语言中没有 Exception 机制，我们可以尝试将具有 throw 关键字的由 .cpp 编译而来的可重定位二进制文件与由 .c 编译得到的包含 main 函数的二进制进行链接。目的是找出对于 throw 关键字，libc++ 为我们最终生成的可执行文件添加了哪些额外函数。
+首先，Exception 机制的实现位于 C++ 标准库中，而由于 C 语言中没有 Exception 机制，我们可以尝试将具有 throw 关键字的由 .cpp 编译而来的可重定位二进制文件与由 .c 编译得到的包含 main 函数的二进制进行链接。目的是找出对于 throw 关键字，libc++ 为我们最终生成的可执行文件添加了哪些额外函数。
 
 throw.h:
 ```c++

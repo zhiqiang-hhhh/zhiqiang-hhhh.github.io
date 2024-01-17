@@ -50,11 +50,11 @@ MapReduce 系统默认会将输入文件的每一行作为一条记录。对于 
 ```
 通常来说，map() 函数会为每一条记录输出一个 (key, value) 集合。map() 函数输出的第一个属性 key 被称为 recude key。
 
-MapReduce 系统接收 map() 函数产生（emit）的所有 (key, value) 对，然后以一个特定键将它们排序（or at least, groups them)。所有 key 匹配的记录将会 gather together，然后生成一条新的记录，该记录将所有的value作为一个list保存。
+MapReduce 系统接收 map() 函数产生（emit）的所有 (key, value) 对，然后以一个特定键将它们排序（or at least, groups them)。所有 key 匹配的记录将会 gather together，然后生成一条新的记录，该记录将所有的 value 作为一个 list 保存。
 ```txt
 ("a", [1,1]),("buns", [1]),("cross", [1]),("hot", [1]),("one", [1]),("penny", [1,1]),("two", [1])
 ```
-reduce 函数会将所有的list相加。
+reduce 函数会将所有的 list 相加。
 ```txt
 ("one", 1)("a", 2),("penny", 2),("two", 1),("hot", 1),("cross", 1),("buns", 1)
 ```
@@ -71,13 +71,13 @@ reduce 函数会将所有的list相加。
 2013/02/22 20:53:29.00EST /slide-dir/12.ppt
 ...
 ```
-我们的 log processing 应用的目标是计算，slide-dir 目录下的每个文件，在 2013/01/01 和 2013/01/31 之间被被访问过多少次。将输入文件的每一行作为 record 输入到 map 函数。map 函数将 record 分割成一个个 token，如果日期列在要求的日志范围内，则输出一条结果 （filename，1）。shuffle 阶段将所有特定的 reduce key 拍在一起，并且将所有结果组成一个 list，然后 reduce 函数去处理每个 shuffle 得到的数据集。
+我们的 log processing 应用的目标是计算，slide-dir 目录下的每个文件，在 2013/01/01 和 2013/01/31 之间被被访问过多少次。将输入文件的每一行作为 record 输入到 map 函数。map 函数将 record 分割成一个个 token，如果日期列在要求的日志范围内，则输出一条结果（filename，1）。shuffle 阶段将所有特定的 reduce key 拍在一起，并且将所有结果组成一个 list，然后 reduce 函数去处理每个 shuffle 得到的数据集。
 
 ### Parallel Processing of MapReduce Tasks
 MapReduce 系统的设计目标是在多台机器上并行处理任务。Map 函数 Reduce 函数都被作为 task 下发给多台机器，Map 函数的处理结果将会以文件的形式保存，并且以文件的形式发送给 reduce task。MapReduce 支持使用分布式文件系统实现文件的分发。
 
 ### SQL on MapReduce
-如果数据保存在文件而不是数据库中，并且查询很容易使用SQL来表达的话，那么使用SQL on MapReduce 来进行计算就要比将数据重新导入数据库再用SQL查询方便的多。
+如果数据保存在文件而不是数据库中，并且查询很容易使用 SQL 来表达的话，那么使用 SQL on MapReduce 来进行计算就要比将数据重新导入数据库再用 SQL 查询方便的多。
 
 关系操作可以使用 map 和 reduce 步骤来实现：
 
