@@ -14,8 +14,8 @@ Status VExpr::create_tree_from_thrift(const std::vector<TExprNode>& nodes, int* 
     return Status::OK();
 }
 ```
-`select * from table where user_id = 0;` user_id 是一个 bigint，其中 `where user_id > 0` 会表示成：
-`where` 对应一个 conjuncts，注意是一个复数单词，所以对应数据结构是一个 `list<conjunct>`,
+`select * from table where user_id = 0;` user_id 类型为 BIGINT, `where user_id > 0` 的表示方式：
+`where` 对应一个 conjuncts，注意是一个复数单词，所以对应数据结构是一个 `list<conjunct>`
 ```thrift
 conjuncts(list) {
     conjunct0,
@@ -25,7 +25,7 @@ conjuncts(list) {
 ```
 demo case 中 where 只有一个表达式，这里只有一个 conjunct。如果是 `WHERE a > b AND c < d` 这样的过滤条件，那么我们得到多个 conjuncts。
 
-`user_id = 0` 是唯一的一个 conjunct，其类型是一个 `Expr`，Expr 是一个由 ExprNode 组成的逻辑上的树状结构实际中的 list 结构。
+`user_id = 0` 是唯一的一个 conjunct，其类型是一个 `Expr`，Expr 是一个由 ExprNode 组成的逻辑上的树状结构，实际由一个 list 结构保存。
 ```thrift
 TExpr {
     nodes(list) {
@@ -35,9 +35,9 @@ TExpr {
     }
 }
 ```
-`user_id = 0` 实际上是 3 个 ExprNode 组成的 Expr，第一个 ExprNode 是代表 = 的 BINARY_PRED，第二第三个 ExprNode 则是分别代表 `user_id` 这个列以及 0 这个常量。
+`user_id = 0` 是 3 个 ExprNode 组成的 Expr，第一个 ExprNode 是代表 = 的 `BINARY_PRED`，第二第三个 `ExprNode` 则是分别代表 `user_id` 列以及 0 这个字面量。
 
-* BINARY_PRED
+* `BINARY_PRED`
 
 ```thrift {.line-numbers}
 ExprNode {
@@ -52,7 +52,7 @@ ExprNode {
     }
 }
 ```
-user_id 与常量 0 作为 Function 的参数存在，即上述第 7 行的 TypeDesc，他俩的类型一样。
+`user_id` 与字面量 `0` 作为 `Function` 的参数存在，对应上述第 7 行的 `TypeDesc(list)`，他俩的类型一样，都是 `BIGINT`。
 ```cpp
 TypeDesc {
     TypeNodes (list) {
@@ -65,7 +65,7 @@ TypeDesc {
     }
 }
 ```
-eq 的返回值是
+函数 `eq` 的返回值是
 ```
 TypeDesc {
     TypeNodes (list) {
@@ -80,7 +80,7 @@ TypeDesc {
 ```
 * user_id
 
-user_id 与 = 这个 BINARY_PRED 的类型都是 ExprNode ，只不过 user_id 与 0 是作为 = 的 child ExprNode
+`user_id` 与 `=` 这个 `BINARY_PRED` 都是 `ExprNode`，`user_id` 与 `0` 是作为 `=` 的 children ExprNode
 ```thrift
 ExprNode {
     ExprNodeType = SLOT_REF
@@ -119,9 +119,9 @@ ExprNode {
     }
 }
 ```
-注意 0 虽然是一个 IntLiteral，但是实际上是使用 int64 保存的。
+注意 0 是一个 IntLiteral，实际类型是 BIGINT。
 
-字面量是怎么转为 Column 的:
+字面量是怎么转为 Column 的：
 ```cpp
 VExpr::Vexpr(const TExprNode& node)
     : _type_desc(TypeDescriptor(node.type)) {
@@ -193,7 +193,7 @@ Field DataTypeNumberBase<T>::get_field(const TExprNode& node) const {
     ...
 }
 ```
-Field 的构造函数如下，这段模板没看懂啊，只能认为没bug得到正确的 int64_t 0 了。
+Field 的构造函数如下，这段模板没看懂啊，只能认为没 bug 得到正确的 int64_t 0 了。
 ```cpp
 /// This (rather tricky) code is to avoid ambiguity in expressions like
 /// Field f = 1;
