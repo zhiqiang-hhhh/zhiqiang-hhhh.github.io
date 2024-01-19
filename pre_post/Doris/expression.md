@@ -1,3 +1,71 @@
+```plantuml
+@startuml
+
+struct TExprNode {
+    + TExprNodeType node_type
+    + TTypeDesc type_desc
+    + TExprOpcode opcode
+    ...
+}
+TExprNode *-- TExprNodeType
+TExprNode *-right- TTypeDesc
+TTypeDesc *-right- TTypeNode
+TTypeNode *-down- TScalarType
+TScalarType *-- TPrimitiveType
+
+enum TExprNodeType {
+    AGG_EXPR,
+    **_EXPR,
+    BINARY_PRED,
+    **_PRED,
+    FLOAT_LITERAL,
+    **_LITERAL,
+    SLOT_REF,
+    COLUMN_REF,
+    FUNCTION_CALL
+}
+
+class TTypeDesc {
+    + types : list<TTypeNode> 
+    + is_nullable : bool
+    + byte_size : i64
+    + sub_types : list<TTypeDesc> 
+    + result_is_nullable : bool
+    + function_name : string
+}
+
+class TTypeNode {
+    +  type : TTypeNodeType
+    + scalar_type : TScalarType
+    ...
+}
+
+class TScalarType {
+    + type : TPrimitiveType
+    + len : i32
+    + precision : i32
+    + scale : i32
+}
+
+enum TPrimitiveType {
+    BOOLEAN,
+    TINYINT,
+    SMALLINT,
+    INT,
+    BIGINT,
+    FLOAT,
+    DOUBLE,
+    DECIMALV2,
+    DECIMAL32,
+    DECIMAL64,
+    DECIMAL256
+}
+
+@enduml
+```
+
+
+
 ```cpp
 Status VExpr::create_tree_from_thrift(const std::vector<TExprNode>& nodes, int* node_idx,
                                       VExprSPtr& root_expr, VExprContextSPtr& ctx)

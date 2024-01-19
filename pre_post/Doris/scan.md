@@ -14,6 +14,7 @@
     - [_init_scanners](#_init_scanners)
   - [Scanner](#scanner)
     - [VScanNode::get_next](#vscannodeget_next)
+  - [Expression push down](#expression-push-down)
 
 <!-- /code_chunk_output -->
 ## Build
@@ -572,9 +573,7 @@ Doris 在 BE 单个进程内部的执行模式是基于 pull 模型的，即上�
 ```cpp {.line-numbers}
 Status VScanNode::get_next(RuntimeState* state, vectorized::Block* block, bool* eos) {
     ...
-
     _scanner_ctx->get_block_from_queue(state, &scan_block, eos, _context_queue_id);
-    
     // get scanner's block memory
     block->swap(*scan_block);
     _scanner_ctx->return_free_block(std::move(scan_block));
@@ -589,7 +588,6 @@ Status ScannerContext::get_block_from_queue(RuntimeState* state, vectorized::Blo
     // Wait for block from queue
     if (wait) {
         // scanner batch wait time
-        SCOPED_TIMER(_scanner_wait_batch_timer);
         while (!(!_blocks_queue.empty() || _is_finished || !status().ok() ||
                  state->is_cancelled())) {
             _blocks_queue_added_cv.wait(l);
@@ -600,11 +598,7 @@ Status ScannerContext::get_block_from_queue(RuntimeState* state, vectorized::Blo
     *block = std::move(_blocks_queue.front());
     _blocks_queue.pop_front();
 
-    RETURN_IF_ERROR(validate_block_schema((*block).get()));
-
-    auto block_bytes = (*block)->allocated_bytes();
-    _cur_bytes_in_queue -= block_bytes;
-    return Status::OK();
+    return validate_block_schema((*block).get());
 }
 ```
 上述代码中精简掉了很多状态检查逻辑。总的来说，就是当 VScanNode::get_next 被调用时，它会阻塞在 ScannerContext::get_block_from_queue 中，等待 Scanner 给 _blocks_queue 中添加 block。
@@ -744,3 +738,4 @@ Status VerticalBlockReader::init(const ReaderParams& read_params) {
     }
 }
 ```
+### Expression push down

@@ -1,3 +1,16 @@
+
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
+
+<!-- code_chunk_output -->
+
+- [Physical plan to PlanFragment](#physical-plan-to-planfragment)
+
+<!-- /code_chunk_output -->
+
+
+
+### Physical plan to PlanFragment
+
 ```java
 public class StmtExecutor {
     private void executeByNereids(queryId) throws Exception {
@@ -46,21 +59,45 @@ public class PhysicalPlanTranslator extends DefaultPlanVisitor<PlanFragment, Pla
 ```
 这里 PhysicalPlan 是一个树状的数据结构，它继承自 Plan:
 ```java
-public interface PhysicalPlan extends Plan {
-    ...
-}
-
 public interface Plan extends TreeNode<Plan> {
     ...
     <R, C> R accept(PlanVisitor<R, C> visitor, C context);
     ...
 }
+
+public interface PhysicalPlan extends Plan {
+    ...
+}
+
+public PhysicalXXX extends PhysicalPlan {
+    @Override
+    public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
+        return visitor.visitXXX(this, context);
+    }
+}
 ```
-每个 Plan 有一个 accept 方法，这是一个模板函数作用是，接收一个 PlanVisiter 对象，调用其 visiter 方法，这个visiter 方法将会把当前的 PhysicalPlan 转成一个 PlanFragment。
+每个 Plan 有一个 accept 方法，这是一个模板函数。
+对于每个 PhysicalXXX，其 accept 函数里会调用 visitor 的 visitXXX 方法，visitXXX 方法将会把当前的 PhysicalPlan 转成一个 PlanFragment。
 
 比如 PhysicalOlapScan:
 ```java
-public class PhysicalOlapScan extends PhysicalCatalogRelation implements OlapScan {
+public interface LeafPlan extends Plan, LeafNode<Plan> {
+    ...
+}
+
+public abstract class PhysicalLeaf extends AbstractPhysicalPlan implements LeafPlan {
+    ...
+}
+
+public abstract class PhysicalRelation extends PhysicalLeaf implements Relation {
+    ...
+}
+
+public abstract class PhysicalCatalogRelation extends PhysicalRelation implements CatalogRelation {
+    ...
+}
+
+public class PhysicalOlapScan implements PhysicalCatalogRelation {
     ...
     @Override
     public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
@@ -85,8 +122,3 @@ PhysicalPlanTranslator 就是一个 PlanVisiter 对象，它实现了 visitPhysi
         return planFragment;
     }
 ```
-
-
-if (!conjuncts.isEmpty()) {
-                output.append("\n").append(prefix).append("PREDICATES: ").append(conjuncts.size()).append("\n");
-            }
