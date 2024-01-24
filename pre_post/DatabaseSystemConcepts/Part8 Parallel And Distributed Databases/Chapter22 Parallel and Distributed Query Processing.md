@@ -22,24 +22,41 @@
     Parallelize the evaluation of the operator tree by evaluating in parallel some of the operations that do not depend on one another.
 
 ## Parallel Sort
-Suppose that we wish to sort a relation r that resides on n nodes N1, N2, ... , Nn. If the relation has been range-partitioned on the attributes on which it is to be sorted, we can sort each partition separately and concatenate the results to get the full sorted relation. Since the tuples are partitioned on n nodes, the time required for reading the entire relation is reduced by a factor of n by the parallel access.
+Suppose that we wish to sort a relation r that resides on n nodes N1, N2, ... , Nn. 
 
-如果数据本身不是按照 order by 的字段进行分区的，那么我们有两种方式实现全局的排序：
+理想情况：数据已经根据 order by 列进行了分区，那么在每个节点上的该列数据都是不相交的，不过分区内的数据并不一定已经排序，所以我们只需要在每个 node 进行排序，然后进行 concatenate 即可。
+**If the relation has been range-partitioned on the attributes on which it is to be sorted, we can sort each partition separately and concatenate the results to get the full sorted relation**. Since the tuples are partitioned on n nodes, the time required for reading the entire relation is reduced by a factor of n by the parallel access.
 
-1. 根据排序字段，对数据进行 range partition，把不同的 range 发送到不同的 node，在不同的 node 完成对 range 内数据排序后，将结果组合成最终的顺序
-2. 使用一个多节点并行版本的 merge sort
+如果数据本身不是按照 order by 的字段进行分区的。那么说明不同 node 上 order by 的列数据可能相交。那么我们有两种方式实现全局的排序：
+
+1. 根据排序字段，对数据进行 range partition，把不同的 range 发送到不同的 node，此时数据分布与理想分布一样，那么后续处理与之前一样：在不同的 node 完成对 range 内数据排序后，将结果组合成最终的顺序
+
+2. 先在每个节点本身不区分 range，直接排序，排序后再进行 range-partition，此时每个接收 range i 的 node i 将会收到多个有序的 tuple stream，node i 进行一次 merge sorted stream，这一步结束后，数据分布相当于在理想情况下，进行一次 local sort，后续只需要进行 concatenate。
 
 ### Range-partitioning sort
-关键：能够在多个 node 上均匀地进行 range partition —— Virtual node partition。
+![Alt text](image.png)
+
+两步：
+1. range-pratition the relation:
+redistribute the tuples in the relation, using a range-partition strategy, so that all tuples that lie within the ith range are sent to node ni
+2. sorting each partition separately
+第二阶段时，每个节点已经获得了它应该包含的 range 下的所有 tuple，那么每个节点就可以并行地对其包含的 range 进行排序。
+
+最后还需要一个 final merge operation。
+
+range-partition sort 实现的关键是如何确保各个节点包含大致相同数量的 tuple。解决这个问题的关键方法：Virtual node partition
+
 
 ### Parallel External Sort-Merge
+![Alt text](image-1.png)
 假设数据已经在多个 node 之间分区，那么 Parallel external sort-merge 的步骤是：
 1. 每个 node 在本地基于 order by 目标列对其数据进行排序
-2. 系统对多个 node 上已经排序好的多个 partition 进行并行排序
+2. 集群对在多个 node 上已经排好序的多个 partition 进行并行排序
 
 其中第二步可以用如下方式进行并行实现：
-1. 对每个 node 上的数据进行 range-partition，每个 node 都会把 Range [i, j) 发送给 Node i
-2. 每个 Node 都收到的是一组排好序的 stream，那么每个 node 就将其收到的数据进行 merge
+
+1. 对每个 node 上的数据进行 range-partition，每个 node 都会把 Range `[i, j)` 发送给 Node i
+2. Node i 收到的一组排好序的 stream，每个 node 就将其收到的数据进行 merge
 3. The system concatenates the sorted runs on nodes N1, N2, ... , Nm to get the final result.
 
 ## Parallel Join
