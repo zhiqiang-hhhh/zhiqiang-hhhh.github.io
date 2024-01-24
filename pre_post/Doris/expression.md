@@ -1,3 +1,15 @@
+
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
+
+<!-- code_chunk_output -->
+
+- [Cast Expr](#cast-expr)
+  - [FE](#fe)
+  - [BE](#be)
+
+<!-- /code_chunk_output -->
+
+
 ```plantuml
 @startuml
 
@@ -292,3 +304,61 @@ MutableColumnPtr DataTypeNumberBase<T>::create_column() const {
 ```
 得到的是一个 `ColumnVecotr<int64_t>`
 
+### Cast Expr
+`select cast(12 as decimalv2(2,1));`
+#### FE
+FE 判断需要进行 implicit cast 的时候应该会 new 一个 CastExpr，具体代码还没找到。
+#### BE
+```thrift
+TExpr {
+    TExprNode[0] = {
+        NodeType = CAST_EXPR(5),
+        TTypeDesc = {
+            TTypeNode = Scalar(0),
+            TScalarType = {
+                TPrimitiveType = DECIMALV2(17),
+                precision = 2
+                scale = 1
+            }
+        },
+        OpCode = 4
+        numchild = 1
+        TFcuntion = {
+            name = "casttodecimalv2",
+            arg_types = [
+                TTypeDesc = {
+                    TTYpeNode = Scalar(0),
+                    TScalarType = {
+                        TPrimitiveType = TINYINT(3),
+                    }
+                }
+            ],
+            return_type = TTypeDesc {
+              TTypeNode = Scalar(0),
+              TScalarType = {
+                    TPrimitiveType = DECIMALV2(17),
+                    precision = 2
+                    scale = 1
+                }
+            },
+            signature(string) = "casttodecimalv2(TINYINT)"
+        }
+    },
+    TExprNode[1] = {
+        NodeType = INT_LITERAL(9),
+        TTypeDesc = {
+            TTypeNode = Scalar(0),
+            TScalarType = {
+                 TPrimitiveType = TINYINT(3),
+            }
+        },
+        num_child = 0,
+        TIntLiteral = {
+            value = 12
+        }
+    }
+}
+```
+BE 看到的表达式结构如上。
+
+```
