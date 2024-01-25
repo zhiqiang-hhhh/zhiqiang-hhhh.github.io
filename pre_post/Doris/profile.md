@@ -66,7 +66,7 @@ public class ProfileManager {
 }
 ```
 
-FE 上 profile 的收集:
+FE 上 profile 的收集：
 ```plantuml
 class StmtExecutor {
     - profile : Profile

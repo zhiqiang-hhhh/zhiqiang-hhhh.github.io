@@ -70,7 +70,7 @@ If we can send such statistics to Scan node of takes, we can get a new execution
     Filter              Filter(age > 10)
         WithMinmaxindex  
 ```
-也就是说，我们可以减少Probe阶段需要的数据。原先需要 probe 5 行，现在通过minmax index过滤掉一行，就只需要 probe 4 行了。
+也就是说，我们可以减少 Probe 阶段需要的数据。原先需要 probe 5 行，现在通过 minmax index 过滤掉一行，就只需要 probe 4 行了。
 
 这就是 Runtime Filter 的基本原理。
 

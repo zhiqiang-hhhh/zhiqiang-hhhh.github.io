@@ -34,7 +34,7 @@ TableQueryPlanAction.java
     
     handleQuery
     
-似乎这个类的方法是专门供通过http接口查询query plan使用的
+似乎这个类的方法是专门供通过 http 接口查询 query plan 使用的
 
     NOTE: 有bug
 
@@ -182,7 +182,7 @@ public class Coordinator {
     }
 }
 ```
-从第7行开始，为每个 fragment 构造 instance 相关参数。
+从第 7 行开始，为每个 fragment 构造 instance 相关参数。
 
 ### BE
 * rpc 入口
@@ -473,7 +473,7 @@ Status FragmentMgr::exec_plan_fragment(const TPipelineFragmentParams& params,
     }
 }
 ```
-执行 fragment 0 的请求时，前面的代码片段的第9行的 `pre_and_submit` 这个 lambda 函数将会被执行 1 次，执行 fragment 1 的请求时，`pre_and_submit` 函数将会被调用两次，该 lambda 函数的每次执行都会创建一个 `PipelineFragmentContext` 对象和一个 `FragmentExecState` 对象。
+执行 fragment 0 的请求时，前面的代码片段的第 9 行的 `pre_and_submit` 这个 lambda 函数将会被执行 1 次，执行 fragment 1 的请求时，`pre_and_submit` 函数将会被调用两次，该 lambda 函数的每次执行都会创建一个 `PipelineFragmentContext` 对象和一个 `FragmentExecState` 对象。
 ```cpp {.line-numbers}
 Status PipelineFragmentContext::prepare(const doris::TPipelineFragmentParams& request,
                                         const size_t idx)
@@ -661,7 +661,7 @@ Status PipelineFragmentContext::_create_sink(int sender_id, const TDataSink& thr
 }
 
 ```
-第 32 行，说明执行 sink 任务的pipeline，永远是 root_pipeline。
+第 32 行，说明执行 sink 任务的 pipeline，永远是 root_pipeline。
 
 
 

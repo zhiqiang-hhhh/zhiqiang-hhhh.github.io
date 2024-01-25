@@ -201,7 +201,7 @@ public abstract class ScanNode extends PlanNode {
 ```
 函数 `createScanRangeLocations()` 会更新 `locations`,
 
-DataGenScanNode 为例:
+DataGenScanNode 为例：
 ```java
 public class DataGenScanNode extends ExternalScanNode {
     protected void createScanRangeLocations() throws UserException {
@@ -337,7 +337,7 @@ class Coordinator {
 }
 ```
 这里 20 行的逻辑是，首先获得 ScanNode 指定的当前 ScanNode 需要多少并发度，然后根据这个并发度 F，将这个 node 的 ScanRange 参数拷贝 F 次
-NOTE: 这里感觉有问题? `F * List<TScanRangeParams>` 会导致实际的并发度并不是 F。
+NOTE: 这里感觉有问题？`F * List<TScanRangeParams>` 会导致实际的并发度并不是 F。
 
 假设 node 的 scan range 是 range 1 + range 2，instance num = 3，那么这里 copy 过后，20 行的 perInstanceScanRanges 就有 3 个 list，
 每个 list 的内容都是 range 1 + range 2。

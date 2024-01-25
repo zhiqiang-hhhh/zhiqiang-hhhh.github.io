@@ -386,7 +386,7 @@ explain select id, reverse(c_array1) from array_test2 order by id
 |      project output tuple id: 1                                               |
 +-------------------------------------------------------------------------------+
 ```
-研究下 reverse 这个函数是怎么被执行的。上面这个 plan 中一共出现了两个 reverse，其中第 12 行的 reverse 函数后面有个#，代表这只是一个别名，第42行的 reverse 表示该函数是在 FRAGMENT 1 的 VOlapScanNode 中被执行的，它属于 projections 操作的一部分，即 VOLAPScanNode 在进行 projection 的时候需要执行 reverse 函数。
+研究下 reverse 这个函数是怎么被执行的。上面这个 plan 中一共出现了两个 reverse，其中第 12 行的 reverse 函数后面有个#，代表这只是一个别名，第 42 行的 reverse 表示该函数是在 FRAGMENT 1 的 VOlapScanNode 中被执行的，它属于 projections 操作的一部分，即 VOLAPScanNode 在进行 projection 的时候需要执行 reverse 函数。
 
 执行过程：
 ```cpp {.line-numbers}

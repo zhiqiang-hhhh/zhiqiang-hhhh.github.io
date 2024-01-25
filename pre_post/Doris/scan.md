@@ -64,7 +64,7 @@ Status ExecNode::create_node(RuntimeState* state, ObjectPool* pool, const TPlanN
 }
 
 ```
-每个Node还可能需要执行表达式，比如 `SELECT * FROM table where a=b;` 这里的 `a=b` 会对应 Plan 中的 PREDICATES，本质是一个表达式，这个表达式是在 `ExecNode::init` 中构造的
+每个 Node 还可能需要执行表达式，比如 `SELECT * FROM table where a=b;` 这里的 `a=b` 会对应 Plan 中的 PREDICATES，本质是一个表达式，这个表达式是在 `ExecNode::init` 中构造的
 ```cpp
 Status ExecNode::init(const TPlanNode& tnode, RuntimeState* state) {
     ...
@@ -83,7 +83,7 @@ Status ExecNode::init(const TPlanNode& tnode, RuntimeState* state) {
     return Status::OK();
 }
 ```
-表达式的结构也是一棵树，具体怎么构造整个树的其实也是一个多叉树的遍历过程，就不列出代码了，只看一下各个节点是怎么构造的:
+表达式的结构也是一棵树，具体怎么构造整个树的其实也是一个多叉树的遍历过程，就不列出代码了，只看一下各个节点是怎么构造的：
 ```cpp
 Status VExpr::create_expr(const TExprNode& expr_node, VExprSPtr& expr) {
     ...
@@ -99,7 +99,7 @@ Status VExpr::create_expr(const TExprNode& expr_node, VExprSPtr& expr) {
 ```
 
 ### ExecNode Prepare
-ExecNode 的构造阶段只是调用了一些构造函数，具体来说，对于每个 ExecNode 中的表达式，在构造阶段我们只是进行了如下第3行的赋值操作：
+ExecNode 的构造阶段只是调用了一些构造函数，具体来说，对于每个 ExecNode 中的表达式，在构造阶段我们只是进行了如下第 3 行的赋值操作：
 ```cpp {.line-numbers}
 class VectorizedFnCall : public VExpr {
 public:
@@ -140,7 +140,7 @@ Status VExprContext::prepare(RuntimeState* state, const RowDescriptor& row_desc)
     return st;
 }
 ```
-这里的 _root 实际上是 `VExpr`，所以会进行虚函数调用。以 `VectorizedFnCall` 为例:
+这里的 _root 实际上是 `VExpr`，所以会进行虚函数调用。以 `VectorizedFnCall` 为例：
 ```cpp
 Status VectorizedFnCall::prepare(RuntimeState* state, const RowDescriptor& desc,
                                  VExprContext* context) {
@@ -171,7 +171,7 @@ Status VectorizedFnCall::prepare(RuntimeState* state, const RowDescriptor& desc,
 
 
 
-到这里可以认为整个物理执行计划已经完成了在BE的内存中的构建工作，下一步需要把物理执行计划转为一个个执行单元，即 PipelineTask
+到这里可以认为整个物理执行计划已经完成了在 BE 的内存中的构建工作，下一步需要把物理执行计划转为一个个执行单元，即 PipelineTask
 
 ### Build PipelineTasks
 
@@ -312,7 +312,7 @@ Status PipelineTask::prepare(RuntimeState* state) {
     return Status::OK();
 }
 ```
-我们专注看一下 ScanOperator 的 prepare 过程:
+我们专注看一下 ScanOperator 的 prepare 过程：
 ```cpp
 class ScanOperator : public SourceOperator<ScanOperatorBuilder> {...}
 
@@ -548,7 +548,7 @@ Status NewOlapScanNode::_init_scanners(std::list<VScannerSPtr>* scanners) {
 ```
 _init_scanner 函数主要完成两件事：
 1. 根据 tablet 的类型以及数据分布，决定创建多少个 scan range,（计算过程还有其他参数）
-2. 对于每个scan range，创建一个 scanner
+2. 对于每个 scan range，创建一个 scanner
 
 ```cpp
 Status VScanNode::_start_scanners(const std::list<VScannerSPtr>& scanners,

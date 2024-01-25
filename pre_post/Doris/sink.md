@@ -339,10 +339,10 @@ class VDataStreamSender : public DataSink
 }
 
 ```
-这里不知道为啥要有 sink 跟 send 两个 API。。。。除了 async_writer_sink 单独实现了 sink 外，其他的都是在 sink 里调用的 send 。。。
+这里不知道为啥要有 sink 跟 send 两个 API。。。。除了 async_writer_sink 单独实现了 sink 外，其他的都是在 sink 里调用的 send。。。
 
 宏观来看，ExchangeSinkOperator 的作用是把当前 pipeline 的 operators 处理完成的一个个 block 按照预设的规则发送给不同的 ExchangeSourceOperator。
-从数据结构角度来看，ExchangeSinkOperator 需要把 Block 转为一个个 PBlock，然后把 PBlock 塞进 brpc 的request 中，通过 brpc 发送给对端。
+从数据结构角度来看，ExchangeSinkOperator 需要把 Block 转为一个个 PBlock，然后把 PBlock 塞进 brpc 的 request 中，通过 brpc 发送给对端。
 也就是在下面的几个数据结构之间进行类型转换。
 ```cpp
 class Block 
