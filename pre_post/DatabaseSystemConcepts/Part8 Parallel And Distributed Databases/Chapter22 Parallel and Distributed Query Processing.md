@@ -60,4 +60,31 @@ range-partition sort 实现的关键是如何确保各个节点包含大致相�
 3. The system concatenates the sorted runs on nodes N1, N2, ... , Nm to get the final result.
 
 ## Parallel Join
+整体目标：把 relate 数据分割到多个 nodes，每个 nodes 完成 join 的一部分工作，然后系统再把每个 node 的结果合并。
 
+### Partitioned Join
+![Alt text](image-2.png)
+只适用于 equi-join。
+
+Can be used for inner joins where the join condition is an equi-join.
+
+使用相同的 pratition function 对 relation s 和 r 进行分区。
+Once both relations are partitioned, we can use any join technique locally at each node Ni to compute join of ri and si.
+
+If one or both of the relations r and s are already parittioned on the join attributes(by either hash partitioning or range partitioning), the woek needed for partitioning is reduced greatly. If the relations are not partitioned or are partitioned on attributes other than the join attributes, then the tuples need to be repartitioned.
+
+考虑本地 join 算法实现时的一些可能的优化技术：
+* If we use hash join locally the resultant parallel join technique is called partitioned parallel hash join.
+
+hash join 首先需要把 input relations 分为多个 small pieces，这样在 build 阶段，每个 smaller relation 才可以 fits into memory. **因此，在 partitioned parallel join 中，每个 node i 需要对其收到的 r i 和 s i 进行 re-partition**。
+
+TODO: Hybird hash join
+
+### Fragment-and-Replicate Join
+
+### Handling Skew in Parallel Joins
+**join skew avoidance**
+**Dynamic handling of join skew**
+**Work stealing** is inexpensive in a shared-memory system, since all data can be accessed quickly from the shared memory.
+
+In a shared-nothing environment, data movement may be required to move a task from one processor to another, but it is often worth paying the overhead to reduce the completion time of a task.
