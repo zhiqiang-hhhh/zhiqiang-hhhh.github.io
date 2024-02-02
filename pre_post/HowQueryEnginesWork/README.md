@@ -1,7 +1,7 @@
 [TOC]
 
 # Apache Arrow
-Apache Arrow 开创了一种对列存数据的内存中的统一表示格式。这种内存格式可以被高效地用于在支持SIMD的CPU上进行数据的向量化处理。
+Apache Arrow 开创了一种对列存数据的内存中的统一表示格式。这种内存格式可以被高效地用于在支持 SIMD 的 CPU 上进行数据的向量化处理。
 标准化的内存数据格式的好处：
 * High-level language 通过将指向数据的指针传递给 Rust 或者 C++ 代码，就可以实现更加高效的数据处理工作。减少数据拷贝。
 * 无需序列化的代价，数据便可以在不同的进程之间传递。
@@ -9,7 +9,7 @@ Apache Arrow 开创了一种对列存数据的内存中的统一表示格式。�
 # Choosing a Type System
 构建一个查询引擎的第一步是构建一个类型系统，用于表示不同的数据类型。
 ## Row-Based or Columnar?
-Query engine 是一行一行地处理数据还是列式处理数据。现今很多查询引擎都是基于火山查询计划的，火山查询计划中的每个步骤中，物理计划将会在数行数据上进行迭代。这种模型实现起来比较简单，但是当行数比较多时，per-row overheads 将会变得非常大。这种代价可以通过把按行迭代改为按batch迭代来降低，不过，如果能够将一个 batch 中的数据都由行式数据转为列式数据，那么我们就可以使用“向量化”（vectorized processing）技术，利用 SIMD （Same Instruction Multiple Data) 来在一条CPU指令里处理多条数据。甚至在未来可以考虑使用GPU来处理这些数据。
+Query engine 是一行一行地处理数据还是列式处理数据。现今很多查询引擎都是基于火山查询计划的，火山查询计划中的每个步骤中，物理计划将会在数行数据上进行迭代。这种模型实现起来比较简单，但是当行数比较多时，per-row overheads 将会变得非常大。这种代价可以通过把按行迭代改为按 batch 迭代来降低，不过，如果能够将一个 batch 中的数据都由行式数据转为列式数据，那么我们就可以使用“向量化”（vectorized processing）技术，利用 SIMD（Same Instruction Multiple Data) 来在一条 CPU 指令里处理多条数据。甚至在未来可以考虑使用 GPU 来处理这些数据。
 
 ## Interoperability
 是否支持用户使用其他语言访问查询引擎。
@@ -24,7 +24,7 @@ Query engine 是一行一行地处理数据还是列式处理数据。现今很�
 
 # Data Sources
 ## Data Source Interface
-在查询规划期间，我们需要知道数据源的 schema，这样查询计划才能够确定目标列存在，并且数据类型是相互兼容的。在有些情况下，我们可能无法获得数据源的 schema，因为数据源本身可能没有固定的schema，这种数据源被称为是 “schema-less"，比如 JSON 文档。
+在查询规划期间，我们需要知道数据源的 schema，这样查询计划才能够确定目标列存在，并且数据类型是相互兼容的。在有些情况下，我们可能无法获得数据源的 schema，因为数据源本身可能没有固定的 schema，这种数据源被称为是“schema-less"，比如 JSON 文档。
 
 在查询执行期间我们需要从数据源获取数据，并且需要说明我们要将哪些列夹在进内存。
 
@@ -43,7 +43,7 @@ A logical plan represents a relation (a set of tuples) with a known schema.
 
 ## Logical Expressions
 
-构成一个logical plan的最重要的基本组件是 logical expression。一些 logical expression的例子：
+构成一个 logical plan 的最重要的基本组件是 logical expression。一些 logical expression 的例子：
 |Expression|Examples|
 |--|--|
 |Literal Value|"hello", 12.34|
@@ -105,7 +105,7 @@ Apply a filter expression to detemine which rows should be selected in its outpu
 ```sql
 SELECT * FROM employee WHERE state = 'CO'
 ```
-一种方式是，我们直接针对该sql写代码，构造一个logical plan：
+一种方式是，我们直接针对该 sql 写代码，构造一个 logical plan：
 ```
 val plan = Projection(
   Selection(
@@ -122,7 +122,7 @@ println(format(plan))
 ```
 不便于理解。
 
-better：data frames
+better: data frames
 
 # Physical Plans & Expressions
 ```kotlin
