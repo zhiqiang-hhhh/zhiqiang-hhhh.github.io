@@ -64,12 +64,14 @@ SELECT DISTINCT cid
 假设我们给 buffer pool 一共分配了 B 个内存块（每个内存块的大小并不一定就是一个磁盘 page 的大小）。与 external sorting 不太一样的一点是，我们需要留 1 个 buffer pool page(bpp) 用于保存输入数据（external sorting 中留一个用于保存输出）。那么可用于保存 hash 结果的内存块为 B-1 个，所以设计 hash 函数的桶数量为 B-1，我们对所有的输入 tuple 应用该 hash 函数，将 tuple 分配至 B-1 个 partition 内，partition 是逻辑概念，对应一个 bpp。输入 bpp 不断读入 tuple，每当某个输出 bpp 满了以后，就将其全部内存 flush 到磁盘，并清空该 bpp 以迎接后续 tuple。重复该过程直到所有 tuple 都被分入到某个 partition 内。
 
 以上过程是 hashing aggregate 的**第一阶段，称为 partition 过程**。
+
 ![picture 1](../../images/75e15e31dd37c40d5b728c17864711fa5dcc9373fad35333b5fbee26b5ae8761.png)  
 
 
 partition 过程结束后我们得到了 B-1 个逻辑 partition，每个 partition 实际上可能会对应一个或者多个 disk page。同时，考虑到 B-1 很可能是小于 distinct tuple 个数的，那么每个 partition 内都有可能具有多个不同的 cid tuple。我们还需要**第二阶段 rehash**继续进行处理。
 
 Partition 阶段的一个重要保证是所有相同的 cid 都在同一个 partition 内。第二阶段 rehash 时，我们对所有 partition 应用另一个 hash 函数，得到一个临时 hash 表，该临时 hash 表内保存了该 partition 中的所有不同 cid。当我们为所有 partition 都得到一个临时 hash 表后，我们需要做的就是将所有临时 hash 表合并，这样就得到了最终结果。
+
 ![picture 2](../../images/35cbf8184489f291cf2d4e7d1032c9a1895f9a1020db8ec9644379013bc31fbd.png)  
 
 

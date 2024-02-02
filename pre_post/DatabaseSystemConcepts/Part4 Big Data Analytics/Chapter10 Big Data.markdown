@@ -1,4 +1,26 @@
-[TOC]
+
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
+
+<!-- code_chunk_output -->
+
+- [Big Data](#big-data)
+  - [Motivation](#motivation)
+  - [Big Data Storage Systems](#big-data-storage-systems)
+    - [Distrubuted File Systems.](#distrubuted-file-systems)
+    - [Sharding across multiple databases.](#sharding-across-multiple-databases)
+    - [Key-Value Storage Systems.](#key-value-storage-systems)
+    - [Parallel and Distributed Databases.](#parallel-and-distributed-databases)
+    - [Replication and Consistency.](#replication-and-consistency)
+  - [The MapReduce Paradigm](#the-mapreduce-paradigm)
+    - [Why MapReduce](#why-mapreduce)
+      - [MapReduce By Example 1: Word Count](#mapreduce-by-example-1-word-count)
+      - [MapReduce By Example 2: Log Processing](#mapreduce-by-example-2-log-processing)
+    - [Parallel Processing of MapReduce Tasks](#parallel-processing-of-mapreduce-tasks)
+    - [SQL on MapReduce](#sql-on-mapreduce)
+
+<!-- /code_chunk_output -->
+
+
 
 # Big Data
 ## Motivation

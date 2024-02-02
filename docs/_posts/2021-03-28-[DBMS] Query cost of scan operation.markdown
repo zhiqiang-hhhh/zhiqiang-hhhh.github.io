@@ -11,8 +11,7 @@ Two factors:
 2. The number of random I/O.
 
 
-Supposing that average time of transferring a block of data from storage
-is $t_{T}$, and average block-access time (disk seek + rotational latenct) is $t_{S}$, then an operation that transfers B blocks and performs S random IO accesses would take $b ∗ t_{T} + S ∗ t_{S}$seconds.
+Supposing that average time of transferring a block of data from storage is $t_{T}$, and average block-access time (disk seek + rotational latenct) is $t_{S}$, then an operation that transfers B blocks and performs S random IO accesses would take $b ∗ t_{T} + S ∗ t_{S}$seconds.
 
 Database systems must ideally perform test seeks and block transfers to estimate $t_{S}$ and $t_{T}$ for specific systems/storage devices, as part of the software installation process. Databases that do
 not automatically infer these numbers often allow users to specify the numbers as part of configuration files.
@@ -26,7 +25,6 @@ Assumption:
 1. $b_{r}$ file blocks to transfer from magnetic storage 
 2. Average height of b+-tree is $h_{i}$
 3. Every nodes of b+-tree needs a random IO operation
-
 
 * Linear search. 
 DBMS scans each file block and tests all records to see whether they meet the predication. One initial seek takes $t_{S}$ seconds, and takes $b_{r}*t_{T}$ seconds for subsequent data block transferring. So overall cost is $t_{S} + b_{r}*t_{T}$
