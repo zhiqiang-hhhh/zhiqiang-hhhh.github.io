@@ -1,138 +1,141 @@
-```sql
-mysql [(none)]>explain select * from demo.example_tbl;
-+---------------------------------------------------------------------------------------------------------------+
-| Explain String                                                                                                |
-+---------------------------------------------------------------------------------------------------------------+
-| PLAN FRAGMENT 0                                                                                               |
-|   OUTPUT EXPRS:                                                                                               |
-|     user_id[#0]                                                                                               |
-|     date[#1]                                                                                                  |
-|     city[#2]                                                                                                  |
-|     age[#3]                                                                                                   |
-|     sex[#4]                                                                                                   |
-|     last_visit_date[#5]                                                                                       |
-|     cost[#6]                                                                                                  |
-|     max_dwell_time[#7]                                                                                        |
-|     min_dwell_time[#8]                                                                                        |
-|   PARTITION: UNPARTITIONED                                                                                    |
-|                                                                                                               |
-|   VRESULT SINK                                                                                                |
-|                                                                                                               |
-|   1:VEXCHANGE                                                                                                 |
-|      offset: 0                                                                                                |
-|                                                                                                               |
-| PLAN FRAGMENT 1                                                                                               |
-|                                                                                                               |
-|   PARTITION: HASH_PARTITIONED: user_id[#0]                                                                    |
-|                                                                                                               |
-|   STREAM DATA SINK                                                                                            |
-|     EXCHANGE ID: 01                                                                                           |
-|     UNPARTITIONED                                                                                             |
-|                                                                                                               |
-|   0:VOlapScanNode                                                                                             |
-|      TABLE: default_cluster:demo.example_tbl(example_tbl), PREAGGREGATION: OFF. Reason: No aggregate on scan. |
-|      partitions=1/1, tablets=1/1, tabletList=10085                                                            |
-|      cardinality=7, avgRowSize=1045.0, numNodes=1                                                             |
-|      pushAggOp=NONE                                                                                           |
-+---------------------------------------------------------------------------------------------------------------+
-31 rows in set (0.02 sec)
+
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
+
+<!-- code_chunk_output -->
+
+- [如何选择副本](#如何选择副本)
+
+<!-- /code_chunk_output -->
+
+```plantuml
+@startuml
+TreeNode <-- PlanFragment 
+
+Coordinator *-- FragmentExecParams
+Coordinator *-right- PlanFragment
+Coordinator *-left- PipelineExecContexts
+FragmentExecParams *-right- PlanFragment
+FragmentExecParams *-down- FInstanceExecParam
+FInstanceExecParam *-up- FragmentExecParams
+
+
+class Coordinator {
+    - fragmentExecParamsMap : Map<PlanFragmentId, FragmentExecParams> 
+    - fragments : List<PlanFragment>
+    - idToBackend : Map<BeID, Backend>
+    - beToPipelineExecCtxs : Map<BeID, PipelineExecContexts>
+}
+
+
+class FragmentExecParams {
+    - fragment : PlanFragment
+    - instanceExecParams : List<FInstanceExecParam>
+    - scanRangeAssignment : FragmentScanRangeAssignment
+    + toThrift(backendNum) : List<TExecPlanFragmentParams>
+}
+
+class FInstanceExecParam {
+    - instanceId : TUniqueId
+    - host : TNetworkAddress
+    - perNodeScanRanges : Map<Integer, List<TScanRangeParams>>
+    - fragmentExecParams : FragmentExecParams
+}
+
+class PipelineExecContexts {
+    - beId : Long
+    - brpcAddr : TNetworkAddress
+    - ctxs : List<PipelineExecContext>
+    - instanceNumber : int
+}
+
+class PlanFragment {
+    - planRoot : PlanNode
+    - destNode : ExchangeNode
+}
+@enduml
 ```
 
-```txt
-PlanFragment
-    PlanFragmentId: 01
-    PlanNode(ExchangeNode):   // rootNode
-        planNodeName: "VEXCHANGE"
-        Id: "01"
-        PlanFragment: 指向包含该 Node 的 PlanFragment
-    ExchangeNode: null
-    DataSink(ResultSink):
-        PlanNodeId: "01"    // 说明这个 sink 节点对应的 exchange 节点的 Id 为 01
-        PlanFragment: 指向包含该 Sink 的 PlanFragment
-    ParallelExecNum : 2
-
-PlanFragment
-    PlanFragmentId: 00
-    PlanNode(OlapScanNode):
-        planNodeName: "OlapScanNode"
-        Id: "00"
-        PlanFragment: 指向包含该 Node 的 PlanFragment
-        OlapTable: 指向 ScanNode 的目标 table
-        IndexId: 10084
-        PartitionIds: [1]
-        TotalBytes:  1463
-        Childern: null
-    DataSink(DataStreamSink):
-        ExchangeNodeId: 01
-        PlanNodeId: "01"    // 说明这个 sink 节点对应的 exchange 节点的 Id 为 01
-        PlanFragment: 指向包含该 Sink 的 PlanFragment
-    ParallelExecNum : 2
-```
-
-* 注意，planRoot 不包含 sink 节点，sink 单独作为一个字段
-
+## 如何选择副本
+`FInstanceExecParam.host` 记录 instance 在哪个 host 执行。
 
 ```java
-private void sendPipelineCtx() {
-    ...
+class OlapScanNode {
+    private void addScanRangeLocations(Partition partition, List<Tablet> tablets) {
+        for (tablet : tablets) {
+            locations = new TScanRangeLocations();
+            new TPolaScanRange();
+            List<Replica> replicas = tablet.getQueryableReplicas();
 
-    for (PlanFragment fragment : fragments) {
-        FragmentExecParams params = fragmentExecParamsMap.get(fragment.getFragmentId());
-        ...
-        Map<TNetworkAddress, TPipelineFragmentParams> tParams = params.toTPipelineParams(backendIdx);
+            for (raplica : raplicas) {
+                if (BE of replica is not alive)
+                    continue;
+                locations.addLocation(new TScanRangeLocation(BE ip:port));
+            }
+
+            this.scanRangeLocations.add(locations);
+        }
     }
 }
 ```
-`fragmentExecParamsMap` 是在 Coordinator::prepare 中构造的，其实就是一个内存中的索引数据结构，方便寻找参数。
+`scanRangeLocations` 是一个 `List<TScanRangeLocations>`。
+对 doris 内表来说，每个 `TScanRangeLocations` 对应一个 tablet，`TScanRangeLocations` 本身包含一个 `List<TScanRangeLocation>`，每个 `TScanRangeLocation` 对应一个 replica。
 
-FragmentExecParams 是 pipeline 中的一个类型，这个类型由 pipeline 的代码从 PlanFragment 构造，**后者是 Planner 负责构造的**。
+ScanNode 构造出来后，它并没有选择某个具体的副本，`addScanRangeLocations` 只是提供了可供选择的 raplica 范围。
 
-注意这段代码 `Map<TNetworkAddress, TPipelineFragmentParams> tParams = params.toTPipelineParams`，tParams 是一个 Map，
 
-TODO: 这里的 TPipelineFragmentParams 应该是对应一个 fragment，那为啥这里会有一个 Map<Address, TPipelineFragmentParams> 呢？按理说应该就一个 pair<Address, TPipelineFragmentParams> 啊。只能说明一个 fragment 有可能会发给多个 BE 去执行
+```java
+class Coordinarot {
+    private void computeFragmentHosts() {
+        for (fragment : fragments) {
+            if (fragment source is UNPARTITION) {
+                if (has resource limit or is external scan) {
+                    select any BE related to this query
+                } else {
+                    select any BE from cluster
+                }
+            } else {
+                if (left most node of fragment is exchangeNode) {
+                    
+                } else (left node must be scanNode) {
+                    if (doing colocate join) {
+                        
+                    } else if (doing bucket shuffle join) {
 
-```cpp
-class TPipelineFragmentParams {
-    ...
-    TPlanFragment fragment;
-    TPipelineInstanceParam local_params;
-    ...
+                    } else {
+                        // normal scan node
+                        for (scan range of this fragment) {
+                            
+                        }
+                    }
+                }
+                
+            }
+        }
+    }
+
+    private void computeScanRangeAssignment() {
+        for (scanNode : scanNodes) {
+            // locations 类型是 List<ScanRangeLocation>
+            locationsList = scanNode.getScanRangeLocations();
+            computeScanRangeAssigmentByScheduler(scanNode, locationsList, )
+        }
+    }
+
+    private void computeScanRangeAssigmentByScheduler(
+        final ScanNode scanNode,
+        final List<TScanRangeLocations> tablet_locations_list,
+        FragmentScanRangeAssignment assignment) {
+
+        for (TScanRangeLocations tablet_locations : tablet_locations_list) {
+            for (tablet_location : tablet_locations) {
+                // Replicas of distinct tablets may have same distribution topology on a set of hosts.
+                // for example we have tablets A/B/C and hosts H1/H2/H3, replica Ai/Bi/Ci resides on Hi.
+                // For a query with 3 fragments and all them has one ScanNode,
+                // we will try to select A1/B2/C3 to assign three ScanNode to avoid IO skew.
+                select a replica with minimal workload
+                add the replica to assignment arg
+            }
+        }
+    }
 }
 ```
-
-
-
-
-### be
-```plantuml
-class PipelineFragmentContext {
-    - _query_id : TUniqueId
-    - _fragment_instance_id : TUniqueId
-    - _fragment_id : int
-    - _backend_num : int
-    - _exec_env : ExecEnv
-    - _exec_status : Status
-    - _cancel_msg : string
-    - _pipelines : List<Pipeline>
-}
-
-PipelineFragmentContext o-- Pipeline
-
-class Pipeline {
-    - _operator_builders : OperatorBuilders
-    - _sink : OperatorBuilder
-    - _parents : List<Pipeline>
-    - _dependencies : List<Pipeline>
-    - _pipeline_id : PipelineId
-    - _context : PipelineFragmentContext
-    - _pipeline_profile : RuntimeProfile
-}
-```
-
-
-
-```cpp
-
-```
-
-be 上，先读 TP

@@ -15,6 +15,7 @@
   - [Scanner](#scanner)
     - [VScanNode::get_next](#vscannodeget_next)
   - [Expression push down](#expression-push-down)
+- [Thread model](#thread-model)
 
 <!-- /code_chunk_output -->
 ## Build
@@ -739,3 +740,9 @@ Status VerticalBlockReader::init(const ReaderParams& read_params) {
 }
 ```
 ### Expression push down
+
+
+## Thread model
+pipeline_task_num 决定了有多少个 OlapScanNode
+
+每个 scannode 读多少 tablet 呢？

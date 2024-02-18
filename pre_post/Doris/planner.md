@@ -3,10 +3,153 @@
 
 <!-- code_chunk_output -->
 
+- [Rewrite](#rewrite)
+  - [RewriteJob](#rewritejob)
 - [Physical plan to PlanFragment](#physical-plan-to-planfragment)
 
 <!-- /code_chunk_output -->
 
+
+### Rewrite
+```plantuml
+Rewriter -up-> AbstractBatchJobExecutor
+
+interface AbstractBatchJobExecutor {
+    + static jobs(RewriteJob...) : List<RewriteJob>
+    + {abstract} getJobs() : List<RewriteJob>
+    + execute() : void
+}
+
+class Rewriter {
+    + static Rewriter getWholeTreeRewriter(Context)
+}
+```
+
+```java
+class NereidsPlanner {
+    private void rewrite() {
+        Rewriter.getWholeTreeRewriter(cascadesContext).execute();
+    }
+}
+```
+`getWholeTreeRewriter` 是一个工厂方法，用来构造指定类型的 Rewriter 对象，Rewriter 对象构造时需要传入一组 RewriteJob，这组 RewriterJob 是通过另一个工厂方法 `getWholeTreeRewriteJobs` 得到的
+```java
+public static Rewriter getWholeTreeRewriter(CascadesContext cascadesContext) {
+    return new Rewriter(cascadesContext, WHOLE_TREE_REWRITE_JOBS);
+}
+
+private static final List<RewriteJob> WHOLE_TREE_REWRITE_JOBS
+            = getWholeTreeRewriteJobs(true);
+```
+getWholeTreeRewriteJobs 在预先定义好的 static 变量 `CTE_CHILDREN_REWRITE_JOBS` 中增加一些新的 RewriteJob 后返回新的 jobs，这一组 `List<RewriteJob>` 将会在 execute 方法中一个个执行。
+```java
+private static List<RewriteJob> getWholeTreeRewriteJobs(boolean withCostBased) {
+        List<RewriteJob> withoutCostBased = Rewriter.CTE_CHILDREN_REWRITE_JOBS.stream()
+                .filter(j -> !(j instanceof CostBasedRewriteJob))
+                .collect(Collectors.toList());
+        return getWholeTreeRewriteJobs(withCostBased ? CTE_CHILDREN_REWRITE_JOBS : withoutCostBased);
+}
+
+private static List<RewriteJob> getWholeTreeRewriteJobs(List<RewriteJob> jobs) {
+        return jobs(
+                topic("cte inline and pull up all cte anchor",
+                        custom(RuleType.PULL_UP_CTE_ANCHOR, PullUpCteAnchor::new),
+                        custom(RuleType.CTE_INLINE, CTEInline::new)
+                ),
+                topic("process limit session variables",
+                        custom(RuleType.ADD_DEFAULT_LIMIT, AddDefaultLimit::new)
+                ),
+                topic("rewrite cte sub-tree",
+                        custom(RuleType.REWRITE_CTE_CHILDREN, () -> new RewriteCteChildren(jobs))
+                ),
+                topic("or expansion",
+                        topDown(new OrExpansion())),
+                topic("whole plan check",
+                        custom(RuleType.ADJUST_NULLABLE, AdjustNullable::new)
+                )
+        );
+}
+```
+#### RewriteJob
+
+```plantuml
+CustomRewriteJob -up-> RewriteJob
+interface RewriteJob {
+    + {abstract} execute(Context) : void
+}
+
+interface CustomRewriter {
+    + {abstract} rewrite(Plan, JonContext) : Plan
+}
+
+CustomRewriteJob  *-- CustomRewriter
+```
+CustomRewriteJob 
+```java {.line-numbers}
+class AbstractBatchJobExecutor {
+    public static RewriteJob custom(RuleType ruleType, Supplier<CustomRewriter> planRewriter) {
+        return new CustomRewriteJob(planRewriter, ruleType);
+    }
+}
+
+public CustomRewriteJob(Supplier<CustomRewriter> rewriter, RuleType ruleType) {
+        this.ruleType = Objects.requireNonNull(ruleType, "ruleType cannot be null");
+        this.customRewriter = Objects.requireNonNull(rewriter, "customRewriter cannot be null");
+}
+
+class CustomRewriteJob {
+    public void execute(JobContext context) {
+        Set<Integer> disableRules = Job.getDisableRules(context);
+        if (disableRules.contains(ruleType.type())) {
+            return;
+        }
+
+        Plan root = context.getCascadesContext().getRewritePlan();
+        Plan rewrittenRoot = customRewriter.get().rewriteRoot(root, context);
+        if (rewrittenRoot == null) {
+            return;
+        }
+
+        context.getCascadesContext().setRewritePlan(rewrittenRoot);
+    }
+}
+```
+第 19 行的 customRewriter 是最初构造时传入的参数，对于不同的规则，构造不同的 CustomRewriter，比如对于`RuleType.REWRITE_CTE_CHILDREN` 就有 `RewriteCteChildren`
+```java
+public class RewriteCteChildren {
+    public Plan rewriteRoot(Plan plan, JobContext jobContext) {
+        return plan.accept(this, jobContext.getCascadesContext());
+    }
+}
+```
+Plan 是一个树状的数据结构，在这里需要改写的是 LogicalPlan，Doris 使用如下的代码模式去实现对 LogicalPlan 上每个 PlanNode 的改写
+```java
+public interface Plan extends TreeNode<Plan> {
+    ...
+    <R, C> R accept(PlanVisitor<R, C> visitor, C context);
+    ...
+}
+
+public interface LogicalPlan extends Plan {
+    ...
+}
+
+punlic LogicalResultSink extends LogicalPlan {
+    @Override
+    public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
+        return visitor.visitLogicalResultSink(this, context);
+    }
+}
+
+public LogicalXXX extends LogicalPlan {
+    @Override
+    public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
+        return visitor.visitLogicalXXX(this, context);
+    }
+}
+```
+每个 Plan 有一个 accept 方法，这是一个模板函数。
+对于每个 LogicalXXX，其 accept 函数里会调用 visitor 的 visitLogicalXXX 方法，visitXXX 方法会把当前的 LogicalXXX 进行改写
 
 
 ### Physical plan to PlanFragment
