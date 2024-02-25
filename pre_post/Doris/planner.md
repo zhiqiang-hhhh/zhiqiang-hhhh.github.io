@@ -3,15 +3,90 @@
 
 <!-- code_chunk_output -->
 
+- [Logical plan](#logical-plan)
 - [Rewrite](#rewrite)
   - [RewriteJob](#rewritejob)
 - [Physical plan to PlanFragment](#physical-plan-to-planfragment)
 
 <!-- /code_chunk_output -->
 
+```plantuml
+Plan -up-> TreeNode
+LogicalPlan -up-> Plan
+AbstractLogicalPlan -up-> LogicalPlan
+PhysicalPlanTranslator -up-> DefaultPlanVisitor
+
+interface Plan {
+    + {abstract} accept(PlanVisitor<R, C> visitor, C context) : <R, C> R
+}
+
+interface PlanVisitor {
+    + {abstract} visit(Plan plan, C context) : R
+    + visitCommand(Command, context) : R
+    + visitLogicalXXX(LogicalXXX, context) : R
+}
+
+DefaultPlanVisitor -up-> PlanVisitor
+
+class DefaultPlanVisitor<R,C> {
+    + visit(Plan, C Context) : R
+}
+note right of DefaultPlanVisitor::"visit(Plan, C Context)"
+for (Plan child : plan.children())
+{
+    child.accept(this, context);
+}
+end note
+
+class PhysicalPlanTranslator<PlanFragment,PlanTranslatorContext> {
+    - context : PlanTranslatorContext
+    + translate(PhysicalPlan) : PlanFragment
+    + visitPhysicalXXX(PhysicalXXX, context) : PlanFragment
+}
+
+PhysicalXXX -up-> Plan
+
+class PhysicalXXX {
+    + accept(PlanVisitor<R, C> visitor, C context) : <R, C> R
+}
+note left of PhysicalXXX::"accept(PlanVisitor<R, C> visitor, C context) : <R, C> R"
+    call visitor.visitPhysicalXXX
+end note
+```
+
+```java
+class PhysicalDistribute {
+    public <R, C> R accept(PlanVisitor<R, C> visitor, C context) {
+        return visitor.visitPhysicalDistribute(this, context);
+    }
+}
+```
+
+
+### Logical plan
+
 
 ### Rewrite
 ```plantuml
+FoldConstantRuleOnFE -up-> AbstractExpressionRewriteRule
+AbstractExpressionRewriteRule -up-> DefaultExpressionRewriter
+AbstractExpressionRewriteRule -up-> ExpressionRewriteRule
+DefaultExpressionRewriter -up-> ExpressionVisitor
+interface ExpressionVisitor
+
+interface DefaultExpressionRewriter {
+    + {static} rewrite(ExpressionVisitor, Expression) : Expression
+}
+note right of DefaultExpressionRewriter::"rewrite(ExpressionVisitor, Expression)"
+new_child = null
+for each child_expr : expr:
+    new_child = child_expr.accept
+return expr.withChildren(new_child)
+end note
+interface ExpressionRewriteRule {
+    + {abstract} rewrite(Expression, T) : Expression
+}
+
 Rewriter -up-> AbstractBatchJobExecutor
 
 interface AbstractBatchJobExecutor {
@@ -151,6 +226,16 @@ public LogicalXXX extends LogicalPlan {
 每个 Plan 有一个 accept 方法，这是一个模板函数。
 对于每个 LogicalXXX，其 accept 函数里会调用 visitor 的 visitLogicalXXX 方法，visitXXX 方法会把当前的 LogicalXXX 进行改写
 
+```java
+class FoldConstantRuleOnFE {
+    @Override
+    public Expression visitCast(Cast cast, ExpressionRewriteContext context) {
+        ...
+        
+    }
+}
+```
+
 
 ### Physical plan to PlanFragment
 
@@ -251,7 +336,7 @@ public class PhysicalOlapScan implements PhysicalCatalogRelation {
 ```
 PhysicalOlapScan 的 accept 方法被实现成调用传入的 PlanVisitor 的 visitPhysicalOlapScan 方法。
 
-PhysicalPlanTranslator 就是一个 PlanVisiter 对象，它实现了 visitPhysicalOlapScan 
+PhysicalPlanTranslator 就是一个 Planvisitor 对象，它实现了 visitPhysicalOlapScan 
 ```java
 @Override
     public PlanFragment visitPhysicalOlapScan(PhysicalOlapScan olapScan, PlanTranslatorContext context) {
