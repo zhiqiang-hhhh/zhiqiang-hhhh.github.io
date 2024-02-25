@@ -18,22 +18,60 @@
 */
 ```
 
-首先思考一下，如果一个 Function 处理的参数可能包含 Nullable 列，那么需要怎么做。Nullable 列可能是：
+首先思考一下，如果一个 Function 处理的参数可以包含 Nullable 列，那么需要怎么做。
+Nullable 列可能是：
 1. NULL constants
 2. NullableColumn
 
 对于第一种情况，最可能的处理是我们直接返回 NULL constant。对于第二种情况，我们可能会先得到 NestedColumn，然后处理 NestedColumn，并且绝大多数情况下，返回值类型也会是 NullableColumn，所以我们会把结果包在 NullableColumn 中返回。
-`defaultImplementationForNulls` 就是把上述了逻辑实现成一个公共函数，如果你需要使用这种默认处理，那么只要在实现函数时，重载
-让其返回 true 即可 (默认就是 true)。
+`defaultImplementationForNulls` 就是把上述了逻辑实现成一个公共函数，如果需要使用这种默认处理，那么只要在实现函数时，重载让其返回 true 即可 (默认就是 true)。
 
 ```cpp
 bool useDefaultImplementationForNulls() const { return true; }
 ```
-`defaultImplementationForNulls` 的实现还是比较简单的，很清晰，不多写了。
+`defaultImplementationForNulls`
+```cpp
+ColumnPtr IExecutableFunction::defaultImplementationForNulls(
+    const ColumnsWithTypeAndName & args, const DataTypePtr & result_type, size_t input_rows_count, bool dry_run) const
+{
+    /// Step 0
+    if (args.empty() || !useDefaultImplementationForNulls())
+        return nullptr;
+
+    ///
+    NullPresence null_presence = getNullPresense(args);
+
+    if (null_presence.has_null_constant)
+    {
+        // Default implementation for nulls returns null result for null arguments,
+        // so the result type must be nullable.
+        if (!result_type->isNullable())
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
+                "Function {} with Null argument and default implementation for Nulls "
+                "is expected to return Nullable result, got {}",
+                getName(),
+                result_type->getName());
+
+        return result_type->createColumnConstWithDefaultValue(input_rows_count);
+    }
+
+    if (null_presence.has_nullable)
+    {
+        ColumnsWithTypeAndName temporary_columns = createBlockWithNestedColumns(args);
+        auto temporary_result_type = removeNullable(result_type);
+
+        auto res = executeWithoutLowCardinalityColumns(temporary_columns, temporary_result_type, input_rows_count, dry_run);
+        return wrapInNullable(res, args, result_type, input_rows_count);
+    }
+
+    return nullptr;
+}
+```
 
 ### defaultImplementationForConstantArguments
 
-创建 `defaultImplementationForConstantArguments` 的目的与 `defaultImplementationForNulls` 一样，都是抽象出公共逻辑。 不过 `defaultImplementationForConstantArguments` 准确说其实是对于当实际入参全为Constant时的优化。
+创建 `defaultImplementationForConstantArguments` 的目的与 `defaultImplementationForNulls` 一样，都是抽象出公共逻辑。不过 `defaultImplementationForConstantArguments` 准确说其实是对于当实际入参全为 Constant 时的优化。
 
 假设定义了函数 Function(A, B)，其中 A 必须为 Constant，B 是 Int64。如果在运行中，B 为非 Constant，那么我们只能老老实实按行计算。但是，如果 B 实际上是套了一个 ColumnConst 的 ColumnInt64，那么我们可以只计算一次 Funciton(A, B)，然后将结果拷贝实际的行数个。
 
@@ -68,7 +106,7 @@ ColumnPtr IExecutableFunction::defaultImplementationForConstantArguments(
     return ColumnConst::create(result_column, input_rows_count);
 }
 ```
-注意， 这里 ConstColumn 实际行数是 input_rows_count，所以需要复制 1 个元素后在添加到 temporary_columns 中。而 else 分支里的 ColumnConstant
+注意，这里 ConstColumn 实际行数是 input_rows_count，所以需要复制 1 个元素后在添加到 temporary_columns 中。而 else 分支里的 ColumnConstant
 ```cpp
 if (arg must be ConstColumn) {
     temporary_columns.push_back(arg->cloneReseized(1));
@@ -78,3 +116,6 @@ if (arg must be ConstColumn) {
 }
 ```
 
+**当函数不使用怼 Nullable 以及 Const 的默认处理时，就需要函数实现自己处理 Nullable 以及 Const 的情况**，处理可以在两个地方进行：
+1. 在 getReturnType 里限制某个函数是否接受 Nullable 列或者 Const 列
+2. 在 execute 里对每个 block 进行处理
