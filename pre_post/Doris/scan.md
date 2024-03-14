@@ -301,10 +301,13 @@ Status PipelineTask::prepare(RuntimeState* state) {
     _init_profile();
     ...
     RETURN_IF_ERROR(_sink->prepare(state));
+
     for (auto& o : _operators) {
         RETURN_IF_ERROR(o->prepare(state));
     }
+
     ...
+    
     _block = _fragment_context->is_group_commit() ? doris::vectorized::FutureBlock::create_unique()
                                                   : doris::vectorized::Block::create_unique();
     ...

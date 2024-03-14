@@ -1,72 +1,14 @@
-[TOC]
 
-## profile
-```java
-public class StmtExecutor {
-    ...
-    public void executeByLegacy(queryid) {
-        ...
-        if (!context.isTxnModel()) {
-            ...
-            try (Scope ignored = queryAnalysisSpan.makeCurrent()) {
-                // analyze this query
-                analyze(context.getSessionVariable().toThrift());
-            }
-        }
-        ...
-        else if (parsedStmt instanceof ShowStmt) {
-            handleShow();
-        }
-        ...
-    }
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
 
-    private void handleShow() throws IOException, AnalysisException, DdlException {
-        ShowExecutor executor = new ShowExecutor(context, (ShowStmt) parsedStmt);
-        ShowResultSet resultSet = executor.execute();
-        if (resultSet == null) {
-            // state changed in execute
-            return;
-        }
-        if (isProxy) {
-            proxyResultSet = resultSet;
-            return;
-        }
+<!-- code_chunk_output -->
 
-        sendResultSet(resultSet);
-    }
+- [profile on FE](#profile-on-fe)
+  - [Profile on BE](#profile-on-be)
 
-}
+<!-- /code_chunk_output -->
+## profile on FE
 
-public class ShowQueryProfileStmt {
-    ...
-    // 用于检查 SHOW PROFILE 语法是否正确，确定 SHOW 的类型是全部/Fragment/Instance
-    pubcli void analyze(Analyzer analyzer) {
-        ...
-    }
-}
-
-public class ShowExecutor {
-    ...
-    private void handleShowQueryProfile() {
-        ...
-        ProfileTreeNode treeRoot = ProfileManager.getInstance().getFragmentProfileTree(showStmt.getQueryId(), showStmt.getQueryId());
-        List<String> row = Lists.newArrayList(ProfileTreePrinter.printFragmentTree(treeRoot));
-        rows.add(row);
-        break;
-    }
-}
-
-public class ProfileManager {
-    ...
-    public ProfileTreeNode getFragmentProfileTree(String queryID, String executionId) {
-        ProfileElement element = queryIdToProfileMap.get(queryID);
-        builder = element.builder;
-        return builder.getFragmentTreeRoot(executionId);
-    }
-}
-```
-
-FE 上 profile 的收集：
 ```plantuml
 class StmtExecutor {
     - profile : Profile
@@ -99,7 +41,9 @@ class SummaryProfile {
     - summaryProfile : RuntimeProfile
     - executionSummaryProfile : RuntimeProfile
 }
+
 ```
+
 
 ### Profile on BE
 每个 fragment instance 对应一个 be 上的 PipelineFragmentContext 对象，执行 PipelineFragmentContext::prepare 的时候会创建成员变量 RuntimeProfile，以及 RuntimeState，后者内部也有一个 RuntimeProfile 对象，prepare 阶段还会创建 ExecNode 对象，ExecNode 对象里也有 RuntimeProfile 对象，不过该 RuntimeProfile 对象是在 `ExecNode::init_runtime_profile` 中创建的，
@@ -116,6 +60,21 @@ PipelineFragmentContext o-- RuntimeState
 RuntimeState o-- RuntimeProfile
 PipelineFragmentContext o-- ExecNode
 ExecNode o-- RuntimeProfile
+
+class PipelineFragmentContext {
+    - _runtime_profile : RuntimeProfile
+    - _runtime_state : RuntimeState
+    - _root_plan : ExecNode
+}
+
+class RuntimeProfile {
+    - _name : string
+    - _is_sink : bool
+    - _counter_map : map<string, Counter>
+    - _child_map : map<std::string, RuntimeProfile*>
+    + to_thrift() : void
+}
+
 ```
 
 ```txt
@@ -125,6 +84,7 @@ PipelineFragmentContext::prepare
             ExecNode::init
                 ExecNode::init_runtime_profile
                     ExecNode._runtime_profile.reset(new RuntimeProfile(ss.str()));
+
     ExecNode::prepare
         // ExecNode._runtime_profile.add_counte ...
         for (child : childer)
