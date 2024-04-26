@@ -3,8 +3,11 @@
 
 <!-- code_chunk_output -->
 
-- [defaultImplementationForNulls](#defaultimplementationfornulls)
-- [defaultImplementationForConstantArguments](#defaultimplementationforconstantarguments)
+  - [defaultImplementationForNulls](#defaultimplementationfornulls)
+  - [defaultImplementationForConstantArguments](#defaultimplementationforconstantarguments)
+- [Function](#function)
+  - [AggregateFunction](#aggregatefunction)
+  - [IAggregateFunctionDataHelper](#iaggregatefunctiondatahelper)
 
 <!-- /code_chunk_output -->
 
@@ -119,3 +122,65 @@ if (arg must be ConstColumn) {
 **当函数不使用怼 Nullable 以及 Const 的默认处理时，就需要函数实现自己处理 Nullable 以及 Const 的情况**，处理可以在两个地方进行：
 1. 在 getReturnType 里限制某个函数是否接受 Nullable 列或者 Const 列
 2. 在 execute 里对每个 block 进行处理
+
+
+
+## Function
+函数可以分为标量函数 (Scalar function) 与聚合函数 (Aggregate Function)，前者的结果与输入是一一对应的，输入 n 行得到 n 行，比如 truncate，后者的结果与输入并不是一一对应，输入 n 行得到 1 行，比如 min/max。
+
+
+### AggregateFunction
+所有的聚合函数都应当继承实现 `IAggregateFunction`，该函数定义了所有聚合函数应当实现的接口。
+
+```plantuml
+class IAggregateFunction {
+    {abstract} destory(AggregateDataPtr) : void
+    {abstract} destroy_vec(AggregateDataPtr, num_rows) : void
+    {abstract} add(AggregateDataPtr, IColumn**, row_num, Arena*) : void
+    {abstract} merge(AggregateDataPtr, ConstAggregateDataPtr rhs, Arena*) : void
+    ...
+}
+
+IAggregateFunctionHelper -up-> IAggregateFunction
+
+class IAggregateFunctionHelper<Derived>
+
+IAggregateFunctionDataHelper -up-> IAggregateFunctionHelper
+
+class IAggregateFunctionDataHelper<DataType, Derived>
+
+class AggregateFunctionPercentile<PercentileState, AggregateFunctionPercentile>
+
+AggregateFunctionPercentile -up-> IAggregateFunctionDataHelper
+```
+
+为什么需要 `IAggregateFunctionHelper` 这个类？通过在编译期显式 cast 指针来消除运行时的虚函数调用开销。
+```cpp
+template <typename Derived>
+class IAggregateFunctionHelper : public IAggregateFunction {
+public:
+    void add_batch(...) const override
+    {
+        for (size_t i = 0; i < batch_size; ++i) {
+            assert_cast<const Derived*>(this)->add(places[i] + place_offset, columns, i, arena);
+        }
+    }
+}
+```
+为什么需要 `IAggregateFunctionDataHelper`?
+
+### IAggregateFunctionDataHelper
+所有继承实现了 `IAggregateFunctionDataHelper` 的类，都将具有 `IAggregateFunctionDataHelper` 提供的一些便利方法，
+```cpp
+class AggregateFunctionPercentile final
+        : public IAggregateFunctionDataHelper<PercentileState, AggregateFunctionPercentile> {
+        ...
+        void add(AggregateDataPtr __restrict place, const IColumn** columns, ssize_t row_num,
+             Arena*) const override {
+            const auto& sources = assert_cast<const ColumnVector<Int64>&>(*columns[0]);
+            const auto& quantile = assert_cast<const ColumnVector<Float64>&>(*columns[1]);
+            AggregateFunctionPercentile::data(place).add(sources.get_int(row_num), quantile.get_data(), 1);
+        }
+}
+```
+比如对于 `AggregateFunctionPercentile` 来说，其 add 方法将会执行到 `PercentileState::add`
