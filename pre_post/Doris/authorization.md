@@ -34,11 +34,3 @@ private boolean parseAuthInfo(HttpServletRequest request, ActionAuthorizationInf
     ...
 }
 ```
-
-### mysql load
-```cpp
-public LoadJobRowResult executeMySqlLoadJobFromStmt(ConnectContext context, DataDescription dataDesc, String loadId)
-{
-    
-}
-```

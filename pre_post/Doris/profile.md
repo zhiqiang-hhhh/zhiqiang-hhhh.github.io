@@ -6,6 +6,12 @@
 - [profile on FE](#profile-on-fe)
   - [Profile on BE](#profile-on-be)
 
+
+The problem of current profile in user‘s perspective:
+1. They can not see profile unless they execute the query with `SET enable_profile=true`
+2. Profile consumes too much memory
+3. Profile is not persisted to disk, they can just see about 100 history queries profiles.
+
 <!-- /code_chunk_output -->
 ## profile on FE
 
@@ -20,12 +26,13 @@ class Profile {
     - summaryProfile : SummaryProfile
     - executionProfiles : List<ExecutionProfile>
     - isFinished : boolean
-    + addExecutionProfile(ExecutionProfile) : void
+    + addExecutionProfilwe(ExecutionProfile) : void
     + update(startTime, Map<String, String> summaryInfo, isFinished) : void
 }
 
 Profile o-- RuntimeProfile
 Profile o-- SummaryProfile
+Profile o-- ExecutionProfile
 
 class RuntimeProfile {
     ...
@@ -42,7 +49,18 @@ class SummaryProfile {
     - executionSummaryProfile : RuntimeProfile
 }
 
+class ExecutionProfile {
+    - execProfile : RuntimeProfile
+    - fragmentProfiles : List<RuntimeProfile>
+    - loadChannelProfile : RuntimeProfile
+}
+
 ```
+
+
+
+
+
 
 
 ### Profile on BE
