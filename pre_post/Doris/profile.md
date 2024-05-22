@@ -6,12 +6,6 @@
 - [profile on FE](#profile-on-fe)
   - [Profile on BE](#profile-on-be)
 
-
-The problem of current profile in user‘s perspective:
-1. They can not see profile unless they execute the query with `SET enable_profile=true`
-2. Profile consumes too much memory
-3. Profile is not persisted to disk, they can just see about 100 history queries profiles.
-
 <!-- /code_chunk_output -->
 ## profile on FE
 
@@ -91,6 +85,7 @@ class RuntimeProfile {
     - _counter_map : map<string, Counter>
     - _child_map : map<std::string, RuntimeProfile*>
     + to_thrift() : void
+    + add_child(RuntimeProfile* child, RuntimeProfile* parent);
 }
 
 ```
@@ -114,7 +109,12 @@ PipelineFragmentContext::prepare
 ```
 
 ```cpp
-class PipelineTask {
-    
+void PipelineTask::_init_profile() {
+    _task_profile =
+            std::make_unique<RuntimeProfile>(fmt::format("PipelineTask (index={})", _index));
+
+    _parent_profile->add_child(_task_profile.get(), true, nullptr);
+    _task_cpu_timer = ADD_TIMER(_task_profile, "TaskCpuTime");
+    ...
 }
 ```
