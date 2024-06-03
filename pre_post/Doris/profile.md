@@ -118,3 +118,48 @@ void PipelineTask::_init_profile() {
     ...
 }
 ```
+-----------
+
+insert into select 的结束以来于 BE 的汇报进度。
+
+```java
+class ExecutionProfile {
+    // A countdown latch to mark the completion of each instance.
+    // instance id -> dummy value
+    private MarkedCountDownLatch<TUniqueId, Long> profileDoneSignal;
+
+    public void markOneInstanceDone(TUniqueId fragmentInstanceId) {
+        if (profileDoneSignal != null) {
+            profileDoneSignal.markedCountDown(fragmentInstanceId, -1L);
+        }
+    }
+
+    public boolean awaitAllInstancesDone(long waitTimeS) throws InterruptedException {
+        if (profileDoneSignal == null) {
+            return true;
+        }
+        return profileDoneSignal.await(waitTimeS, TimeUnit.SECONDS);
+    }
+}
+
+class Coordinator {
+    void updateFragmentExecStatus(TReportExecStatusParams params) {
+        executionProfile.markOneInstanceDone(params.getFragmentInstanceId());
+    }
+}
+
+class QeImpl {
+    public TReportExecStatusResult reportExecStatus(TReportExecStatusParams params, TNetworkAddress beAddr) {
+        final QueryInfo info = coordinatorMap.get(params.query_id);
+        if (info != null) {
+            info.getCoord().updateFragmentExecStatus(params);
+            if (params.isSetProfile()) {
+                writeProfileExecutor.submit(new WriteProfileTask(params, info));
+            }
+        }
+    }
+}
+```
+所以说，只要 INSERT INTO SELECT 返回成功，说明：
+1. profileDoneSignal 一定为空
+2. 等待超时
