@@ -20,7 +20,7 @@ class Profile {
     - summaryProfile : SummaryProfile
     - executionProfiles : List<ExecutionProfile>
     - isFinished : boolean
-    + addExecutionProfilwe(ExecutionProfile) : void
+    + addExecutionProfile(ExecutionProfile) : void
     + update(startTime, Map<String, String> summaryInfo, isFinished) : void
 }
 
@@ -49,6 +49,8 @@ class ExecutionProfile {
     - loadChannelProfile : RuntimeProfile
 }
 
+SummaryProfile o-- RuntimeProfile
+ExecutionProfile o-- RuntimeProfile
 ```
 
 
@@ -163,3 +165,74 @@ class QeImpl {
 所以说，只要 INSERT INTO SELECT 返回成功，说明：
 1. profileDoneSignal 一定为空
 2. 等待超时
+
+----
+
+Profile On FE
+```text
+Summary:
+      -  Profile  ID:  172924
+      -  Task  Type:  LOAD
+      -  Start  Time:  2024-05-30  16:19:52
+      -  End  Time:  2024-05-30  16:21:21
+      -  Total:  1m28s
+      -  Task  State:  FINISHED
+      -  User:  root
+      -  Default  Db:  tpcds_1000g
+      -  Sql  Statement: xxx
+Execution  Summary:
+      -  Nereids  Analysis  Time:  N/A
+      -  Wait  and  Fetch  Result  Time:  N/A
+      -  Fetch  Result  Time:  0ms
+      -  Is  Nereids:  N/A
+      -  Is  Pipeline:  N/A
+      -  Is  Cached:  N/A
+      -  Total  Instances  Num:  N/A
+      -  Instances  Num  Per  BE:  N/A
+
+MergedProfile:
+    Fragments:
+        Fragment 0:
+            Pipeline: 0
+                SINK
+                EXCH
+            Pipeline: 1
+                SINK
+                AGG
+        Fragment 1:
+            Pipeline: 0
+            Pileline: 1
+
+Execution  Profile  586788fd67734751-91a325c6dbd470e6:(Active:  1m25s,  %  non-child:  0.00%)
+    Fragments:
+        Fragment   0:
+            Fragment  Level  Profile:    (host=TNetworkAddress(hostname:172.30.0.68,  port:9050)):(Active:  1m25s,  %  non-child:  0.00%)
+                  -  BuildPipelinesTime:  1.65ms
+                  -  BuildTasksTime:  4.792ms
+                  -  InitContextTime:  32.711us
+                  -  PlanLocalShuffleTime:  0ns
+                  -  PrepareAllPipelinesTime:  7.876us
+                  -  PrepareTime:  5.905ms
+            Pipeline : 0
+                PipelineTask(index = 0):
+                PipelineTask(index = 1):
+            Pipeline : 1
+                PipelineTask(index = 0):
+                PipelineTask(index = 1):
+        Fragment   1:
+            Fragment  Level  Profile:    (host=TNetworkAddress(hostname:10.16.10.8,  port:9251)):(Active:  168.218ms,  %  non-child:  0.00%)
+                  -  BuildPipelinesTime:  337.95us
+                  -  BuildTasksTime:  2.455ms
+                  -  InitContextTime:  177.770us
+                  -  PlanLocalShuffleTime:  15.361us
+                  -  PrepareAllPipelinesTime:  148.170us
+                  -  PrepareTime:  3.235ms
+            Pipeline : 0
+                PipelineTask(index = 0):
+                PipelineTask(index = 1):
+            Pipeline : 1
+                PipelineTask(index = 0):
+                PipelineTask(index = 1):
+
+```
+Pipline Profile 的典型结构如上。
