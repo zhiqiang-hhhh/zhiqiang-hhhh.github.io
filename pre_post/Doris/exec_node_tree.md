@@ -1,5 +1,15 @@
 <!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
 
+<!-- code_chunk_output -->
+
+- [Overall](#overall)
+  - [vunion_node](#vunion_node)
+    - [init](#init)
+  - [vscan_node](#vscan_node)
+
+<!-- /code_chunk_output -->
+
+
 
 ### Overall
 create_tree_helper creates exec node tree in a recursive manner
@@ -12,8 +22,7 @@ ExecNode::create_tree_helper(
     const DescriptorTbl& descs,
     ExecNode* parent,
     int* node_idx,
-    ExecNode** root
-)
+    ExecNode** root)
 {
     const TPlanNode& curr_plan_node = thrift_plan_nodes[*node_idx];
     int num_children = curr_plan_node.num_children;
