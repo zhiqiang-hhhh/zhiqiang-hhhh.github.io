@@ -427,8 +427,51 @@ Status BlockReader::init(const ReaderParams& read_params) {
     auto status = _init_collect_iter(read_params);
 
 }
+```
 
-
+```
+Thread 1409 (Thread 0x7f3d64ecf640 (LWP 2232) "Scan_normal [wo"):
+#0  0x00007f40ce219117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007f40ce21be9b in pthread_cond_timedwait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x000055927650ec8e in __gthread_cond_timedwait (__cond=0x7f3d06acbae0, __mutex=0x189, __abs_timeout=0x7f3d64ec73e8) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/x86_64-linux-gnu/c++/11/bits/gthr-default.h:872
+#3  std::__condvar::wait_until (this=0x7f3d06acbae0, __m=..., __abs_time=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/std_mutex.h:162
+#4  std::condition_variable::__wait_until_impl<std::chrono::duration<long, std::ratio<1l, 1000000000l> > > (this=0x7f3d06acbae0, __lock=..., __atime=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/condition_variable:222
+#5  std::condition_variable::wait_until<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > > (this=0x7f3d06acbae0, __lock=..., __atime=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/condition_variable:135
+#6  std::condition_variable::wait_for<long, std::ratio<1l, 1l> > (this=0x7f3d06acbae0, __lock=..., __rtime=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/condition_variable:163
+#7  0x0000559276513bd1 in doris::io::FileBlock::wait (this=0x7f3d06acba90) at /root/selectdb-core/be/src/io/cache/file_block.cpp:220
+#8  0x00005592764fcb11 in doris::io::CachedRemoteFileReader::read_at_impl (this=0x7f3d351dc990, offset=210759772, result=..., bytes_read=0x7f3d64ec77d0, io_ctx=<optimized out>) at /root/selectdb-core/be/src/io/cache/cached_remote_file_reader.cpp:272
+#9  0x00005592764fa43d in doris::io::FileReader::read_at (this=0x189, offset=0, result=..., bytes_read=0xffffffff, io_ctx=0x7f3b305bf420) at /root/selectdb-core/be/src/io/fs/file_reader.cpp:32
+#10 0x0000559276da65d0 in doris::segment_v2::PageIO::read_and_decompress_page (opts=..., handle=0x7f3d64ec7950, body=0x7f3d64ec7938, footer=0x7f3d64ec7888) at /root/selectdb-core/be/src/olap/rowset/segment_v2/page_io.cpp:153
+#11 0x0000559276dc626e in doris::segment_v2::ColumnReader::read_page (this=0x7f3d24118500, iter_opts=..., handle=0x7f3d64ec7950, page_body=0x7f3d64ec7938, footer=0x7f3d64ec7888, codec=0x5592840f9438 <doris::ZstdBlockCompression::instance()::s_instance>, pp=...) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.cpp:360
+#12 doris::segment_v2::FileColumnIterator::_read_data_page (this=0x7f3b305bf400, iter=...) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.cpp:1351
+#13 0x0000559276dc67ed in doris::segment_v2::FileColumnIterator::_load_next_page (this=0x189, this@entry=0x7f3b305bf400, eos=eos@entry=0x7f3d64ec7a28) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.cpp:1340
+#14 0x0000559276dc5228 in doris::segment_v2::FileColumnIterator::next_batch (this=0x7f3b305bf400, n=0x7f3d64ec7ad8, dst=..., has_null=0x7f3d64ec7b50) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.cpp:1208
+#15 0x0000559276e06ca8 in doris::segment_v2::ColumnIterator::next_batch (this=0x189, this@entry=0x7f4050f406f0, n=0x7f3d64ec7ad8, dst=...) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.h:304
+#16 doris::segment_v2::SegmentIterator::_read_columns_by_index (this=this@entry=0x7f378e03fe00, nrows_read_limit=<optimized out>, nrows_read=@0x7f378e040548: 4064, set_block_rowid=<optimized out>) at /root/selectdb-core/be/src/olap/rowset/segment_v2/segment_iterator.cpp:2103
+#17 0x0000559276e09f20 in doris::segment_v2::SegmentIterator::_next_batch_internal (this=0x7f378e03fe00, block=0x7f39819771d0) at /root/selectdb-core/be/src/olap/rowset/segment_v2/segment_iterator.cpp:2474
+#18 0x0000559276e08aea in doris::segment_v2::SegmentIterator::next_batch(doris::vectorized::Block*)::$_0::operator()() const (this=<optimized out>) at /root/selectdb-core/be/src/olap/rowset/segment_v2/segment_iterator.cpp:2315
+#19 doris::segment_v2::SegmentIterator::next_batch (this=0x189, block=0x0) at /root/selectdb-core/be/src/olap/rowset/segment_v2/segment_iterator.cpp:2314
+#20 0x0000559276da536c in doris::segment_v2::LazyInitSegmentIterator::next_batch (this=0x7f3ccb2b4200, block=0x7f39819771d0) at /root/selectdb-core/be/src/olap/rowset/segment_v2/lazy_init_segment_iterator.h:44
+#21 0x0000559276cc5bf4 in doris::BetaRowsetReader::next_block (this=0x7f36b06e3200, block=0x7f39819771d0) at /root/selectdb-core/be/src/olap/rowset/beta_rowset_reader.cpp:380
+#22 0x000055927f62784d in doris::vectorized::VCollectIterator::Level0Iterator::_refresh (this=0x7f3981977260) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.h:256
+#23 doris::vectorized::VCollectIterator::Level0Iterator::refresh_current_row (this=0x7f3981977260) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.cpp:514
+#24 0x000055927f627ac5 in doris::vectorized::VCollectIterator::Level0Iterator::ensure_first_row_ref (this=0x189) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.cpp:493
+#25 0x000055927f62a032 in doris::vectorized::VCollectIterator::Level1Iterator::ensure_first_row_ref (this=0x7f3d3d279e80) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.cpp:692
+#26 0x000055927f624969 in doris::vectorized::VCollectIterator::build_heap (this=0x7f3cffc495c0, rs_readers=...) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.cpp:186
+#27 0x000055927f614c88 in doris::vectorized::BlockReader::_init_collect_iter (this=this@entry=0x7f3cffc49000, read_params=...) at /root/selectdb-core/be/src/vec/olap/block_reader.cpp:157
+#28 0x000055927f615ad1 in doris::vectorized::BlockReader::init (this=<optimized out>, read_params=...) at /root/selectdb-core/be/src/vec/olap/block_reader.cpp:229
+#29 0x0000559280343cf9 in doris::vectorized::NewOlapScanner::open (this=0x7f3d7864ac10, state=<optimized out>) at /root/selectdb-core/be/src/vec/exec/scan/new_olap_scanner.cpp:237
+#30 0x000055927a813486 in doris::vectorized::ScannerScheduler::_scanner_scan (ctx=std::shared_ptr<doris::vectorized::ScannerContext> (use count 7, weak count 1) = {...}, scan_task=std::shared_ptr<doris::vectorized::ScanTask> (use count 2, weak count 0) = {...}) at /root/selectdb-core/be/src/vec/exec/scan/scanner_scheduler.cpp:236
+#31 0x000055927a8142ad in doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}::operator()() const::{lambda()#1}::operator()() const (this=<optimized out>) at /root/selectdb-core/be/src/vec/exec/scan/scanner_scheduler.cpp:176
+#32 doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}::operator()() const (this=0x7f404552b1a0) at /root/selectdb-core/be/src/vec/exec/scan/scanner_scheduler.cpp:175
+#33 std::__invoke_impl<void, doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}&>(std::__invoke_other, doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}&) (__f=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/invoke.h:61
+#34 std::__invoke_r<void, doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}&>(doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}&) (__fn=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/invoke.h:111
+#35 std::_Function_handler<void (), doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}>::_M_invoke(std::_Any_data const&) (__functor=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/std_function.h:291
+#36 0x00005592773bc688 in doris::ThreadPool::dispatch_thread (this=0x7f3d771afc00) at /root/selectdb-core/be/src/util/threadpool.cpp:543
+#37 0x00005592773b15d1 in std::function<void ()>::operator()() const (this=0x7f3d06acbb08) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/std_function.h:560
+#38 doris::Thread::supervise_thread (arg=0x7f3d771b4a80) at /root/selectdb-core/be/src/util/thread.cpp:498
+#39 0x00007f40ce21cac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#40 0x00007f40ce2ada04 in clone () from /lib/x86_64-linux-gnu/libc.so.6
 ```
 
 #### ScannerContext::get_free_block
@@ -502,6 +545,36 @@ Status BlockReader::_direct_next_block(Block* block, bool* eof) {
     }
     *eof = res.is<END_OF_FILE>();
     _eof = *eof;
-    ...    
+    ...
+}
+
+Status VerticalBlockReader::_init_collect_iter(const ReaderParams& read_params,
+                                               CompactionSampleInfo* sample_info) {
+    ...
+    if (read_params.is_key_column_group) {
+        uint32_t seq_col_idx = -1;
+        if (read_params.tablet->tablet_schema()->has_sequence_col()) {
+            seq_col_idx = read_params.tablet->tablet_schema()->sequence_col_idx();
+        }
+        if (read_params.tablet->tablet_schema()->num_key_columns() == 0) {
+            _vcollect_iter = new_vertical_fifo_merge_iterator(
+                    std::move(*segment_iters_ptr), iterator_init_flag, rowset_ids,
+                    ori_return_col_size, read_params.tablet->keys_type(), seq_col_idx,
+                    _row_sources_buffer);
+        } else {
+            _vcollect_iter = new_vertical_heap_merge_iterator(
+                    std::move(*segment_iters_ptr), iterator_init_flag, rowset_ids,
+                    ori_return_col_size, read_params.tablet->keys_type(), seq_col_idx,
+                    _row_sources_buffer, read_params.key_group_cluster_key_idxes);
+        }
+    } else {
+        _vcollect_iter = new_vertical_mask_merge_iterator(std::move(*segment_iters_ptr),
+                                                          ori_return_col_size, _row_sources_buffer);
+    }
+    ...
+}
+
+Status VerticalMaskMergeIterator::next_batch(Block* block) {
+    
 }
 ```
