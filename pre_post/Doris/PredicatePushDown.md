@@ -82,7 +82,7 @@
           },
 }
 ```
-`Operator` 对 conjunct 的处理是公用的代码如下：
+`Operator` 对 `conjunct` 的处理是公用的代码如下：
 ```cpp
 Status OperatorXBase::init(const TPlanNode& tnode, RuntimeState* /*state*/) {
     ...
@@ -101,8 +101,6 @@ Status OperatorXBase::init(const TPlanNode& tnode, RuntimeState* /*state*/) {
 }
 ```
 逻辑很简单，就是把上述的 PlanNode 转成 `OperatorXBase._conjuncts` 数据结构，在 BE 上每个 `_conjuncts` 相当于是一个表达式。
-
-
 
 ```cpp
 template <typename Derived>

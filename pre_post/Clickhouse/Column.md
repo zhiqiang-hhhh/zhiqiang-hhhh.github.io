@@ -4,6 +4,7 @@
 <!-- code_chunk_output -->
 
 - [ColumnConst](#columnconst)
+- [ColumnNullable](#columnnullable)
 - [Methods](#methods)
   - [Scatter](#scatter)
 
