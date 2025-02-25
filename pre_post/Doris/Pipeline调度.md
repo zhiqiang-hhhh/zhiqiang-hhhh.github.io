@@ -1,0 +1,5 @@
+```plantuml
+class Dependency {
+    
+}
+```

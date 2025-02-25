@@ -461,7 +461,6 @@ Status StatefulOperatorX<LocalStateType>::get_block(RuntimeState* state, vectori
     auto& local_state = get_local_state(state);
     // 如果当前 Operator 还需要更多数据
     if (need_more_input_data(state)) {
-        //
         local_state._child_block->clear_column_data(
                 OperatorX<LocalStateType>::_child_x->row_desc().num_materialized_slots());
 

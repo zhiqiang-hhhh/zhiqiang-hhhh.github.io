@@ -236,3 +236,13 @@ Execution  Profile  586788fd67734751-91a325c6dbd470e6:(Active:  1m25s,  %  non-c
 
 ```
 Pipline Profile 的典型结构如上。
+
+```plantuml
+class RuntimeProfile {
+    - CounterMap _counter_map;
+    - ChildCounterMap _child_counter_map;
+    - ChildMap _child_map;
+}
+```
+_counter_map: 属于当前 RuntimeProfile 的 counter
+_child_counter_map：当前 RuntimeProfile 的 counter 的 counter
