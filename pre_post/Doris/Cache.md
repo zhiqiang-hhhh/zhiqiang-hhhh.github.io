@@ -15,7 +15,9 @@ LRUCachePolicy *-- Cache
 class LRUCachePolicy {
     _cache : std::shared_ptr<Cache>
     _lru_cache_type : LRUCacheType
-    + insert() : Cache::Handle*
+    + Cache::Handle* insert(const CacheKey& key, void* value, size_t charge,
+                          size_t value_tracking_bytes,
+                          CachePriority priority = CachePriority::NORMAL) 
 }
 
 interface Cache {

@@ -4,7 +4,11 @@
 <!-- code_chunk_output -->
 
 - [表，分区， 分桶](#表分区-分桶)
-- [rowset segment](#rowset-segment)
+- [Rowset Segment](#rowset-segment)
+- [初始化](#初始化)
+  - [Tablet 初始化](#tablet-初始化)
+  - [Rowset 初始化](#rowset-初始化)
+  - [Segment 初始化](#segment-初始化)
 - [代码](#代码)
   - [ScanLocalState::open](#scanlocalstateopen)
     - [创建 Scanner 的策略](#创建-scanner-的策略)
@@ -78,6 +82,7 @@ show tablets from debug_storage
 ```
 分区数量是 2，这里 A 跟 B 都被分到了同一个分桶中，所以 73 跟 77 中数据大小为 0。看一下目录结构：
 ```bash
+[hezhiqiang@VM-10-8-centos storage]$ cd /mnt/disk1/hezhiqiang/workspace/ASAN/be_1/storage
 [hezhiqiang@VM-10-8-centos storage]$ find . -type d -name 2746073
 ./data/20/2746073
 [hezhiqiang@VM-10-8-centos storage]$ find . -type d -name 2746075
@@ -86,29 +91,47 @@ show tablets from debug_storage
 ./data/22/2746077
 [hezhiqiang@VM-10-8-centos storage]$ find . -type d -name 2746079
 ./data/23/2746079
-[hezhiqiang@VM-10-8-centos storage]$ cd ./data/21/2746075/1366655391/
-[hezhiqiang@VM-10-8-centos 1366655391]$ ls
-0200000000000034024daaf90dc78b9be0dee7c6939de5a8_0.dat
-[hezhiqiang@VM-10-8-centos 1366655391]$ pwd
-/mnt/disk1/hezhiqiang/workspace/ASAN/be_1/storage/data/21/2746075/1366655391
-[hezhiqiang@VM-10-8-centos 2746079]$ cd /mnt/disk1/hezhiqiang/workspace/ASAN/be_1/storage/data/23/2746079
-[hezhiqiang@VM-10-8-centos 2746079]$ ls
-1366655391
-[hezhiqiang@VM-10-8-centos 2746079]$ cd 1366655391/
-[hezhiqiang@VM-10-8-centos 1366655391]$ ls
-0200000000000033024daaf90dc78b9be0dee7c6939de5a8_0.dat
+[hezhiqiang@VM-10-8-centos 1366655391]$ cd /mnt/disk1/hezhiqiang/workspace/ASAN/be_1/storage
+[hezhiqiang@VM-10-8-centos 1366655391]$ tree .
+./20
+├── 2746073
+│   └── 1366655391
+│       └── 0200000000000033024daaf90dc78b9be0dee7c6939de5a8_0.dat
+./21
+├── 2746075
+│   └── 1366655391
+│       └── 0200000000000034024daaf90dc78b9be0dee7c6939de5a8_0.dat
+./22
+├── 2746077
+│   └── 1366655391
+│       └── 0200000000000035024daaf90dc78b9be0dee7c6939de5a8_0.dat
+./23
+└── 2746079
+    └── 1366655391
+        └── 0200000000000036024daaf90dc78b9be0dee7c6939de5a8_0.dat
 ```
-22: 分桶 ID
-2746075：tablet ID
-1366655391: rowset 文件名
-0200000000000034024daaf90dc78b9be0dee7c6939de5a8_0.dat: segment 文件名
+目录结构：
+```text
+SharedId
+    |
+    TabletId
+        |
+        SchemaHash
+            |
+            RowSetId_SegmentId.dat
+```
+22: SharedId
+2746075：TabletId
+1366655391: SchemaHash
+0200000000000034024daaf90dc78b9be0dee7c6939de5a8_0.dat: segment 文件，其中 `0200000000000034024daaf90dc78b9be0dee7c6939de5a8` 是 rowset_id，
+`0` 是 segment Id
 
-**每个 tablet 下都有相同的 rowset 文件名，以及 segment 文件名**
 
 
 
-### rowset segment
-rowset 是逻辑概念，用于进行版本控制。作用类似于 clickhouse 中 data_part 的版本后缀。
+### Rowset Segment
+rowset 用于进行版本控制。作用类似于 clickhouse 中 data_part 的版本后缀。
+一个 rowset 里面有一个或者多个 segment。 
 
 ```sql
 mysql [demo]>insert into debug_storage values(2, "C"), (2,"D"), (6,"C"), (6,"D");
@@ -140,6 +163,130 @@ show tablets from debug_storage
 0200000000000034024daaf90dc78b9be0dee7c6939de5a8_0.dat  020000000000003c024daaf90dc78b9be0dee7c6939de5a8_0.dat
 ```
 我的猜测：每次 alter/compaction 会生成一个新的 rowset 目录。
+
+###
+```plantuml
+class TabletReader {
+    - BaseTabletSPtr _tablet;
+    - RowsetReaderContext _reader_context;
+    - TabletSchemaSPtr _tablet_schema;
+}
+
+class VerticalBlockReader {
+    - Function* _next_block_func;
+    - std::shared_ptr<RowwiseIterator> _vcollect_iter
+}
+
+TabletReader <-- VerticalBlockReader
+```
+### 初始化
+```plantuml
+class TabletMeta {
+    std::vector<RowsetMetaSharedPtr> _rs_metas
+    std::shared_ptr<DeleteBitmap> _delete_bitmap;
+    TabletSchemaSPtr _schema;
+}
+class RowsetMeta {
+    RowsetMetaPB _rowset_meta_pb;
+    TabletSchemaSPtr _schema;
+    RowsetId _rowset_id;
+    StorageResource _storage_resource;
+}
+
+class TabletSchema {
+    KeysType keys_type;
+    std::vector<ColumnPB> column;
+}
+
+TabletMeta *-- RowsetMeta
+TabletMeta *-- TabletSchema
+```
+RowsetMeta 是一个很大的 PB 结构。
+TabeltSchema 记录 Table DDL 中记录的一些属性。比如
+```protobuff
+message TabletSchemaPB {
+    optional KeysType keys_type = 1;    // OLAPHeaderMessage.keys_type
+    repeated ColumnPB column = 2;   // OLAPHeaderMessage.column
+    ...
+}
+
+message ColumnPB {
+    required int32 unique_id = 1; // ColumnMessage.unique_id
+    optional string name = 2; // ColumnMessage.name
+    required string type = 3; // ColumnMessage.type
+    optional bool is_key = 4; // ColumnMessage.is_key
+    ...
+}
+```
+
+
+#### Tablet 初始化
+```cpp
+TabletSharedPtr new_tablet =
+                std::make_shared<Tablet>(_engine, std::move(tablet_meta), data_dir);
+
+TabletSharedPtr TabletManager::_create_tablet_meta_and_dir_unlocked(...) {
+    TabletMetaSharedPtr tablet_meta;
+    // if create meta failed, do not need to clean dir, because it is only in memory
+    Status res = _create_tablet_meta_unlocked(request, data_dir, is_schema_change, base_tablet,
+                                                &tablet_meta);
+    ...
+    TabletSharedPtr new_tablet =
+                std::make_shared<Tablet>(_engine, std::move(tablet_meta), data_dir);
+}
+
+Status Tablet::_init_once_action() {
+    ...
+    for (const auto& rs_meta : _tablet_meta->all_rs_metas()) {
+        Version version = rs_meta->version();
+        RowsetSharedPtr rowset;
+        res = create_rowset(rs_meta, &rowset);
+        _rs_version_map[version] = create_rowset(rs_meta, &rowset);
+    }
+    ...
+    return res;
+}
+
+```
+#### Rowset 初始化
+Rowset 的元数据叫做 `RowsetMeta`。
+Rowset 本身是在 tablet 导入数据的时候创建的，RowsetMeta 则是属于 Tablet，在 Tablet 初始化时，从磁盘上 tablet 的元数据里解析出所有的 RowsetMeta。
+
+#### Segment 初始化
+```cpp
+Status BetaRowset::get_segment_num_rows(std::vector<uint32_t>* segment_rows) {
+    DCHECK(_rowset_state_machine.rowset_state() == ROWSET_LOADED);
+
+    RETURN_IF_ERROR(_load_segment_rows_once.call([this] {
+        auto segment_count = num_segments();
+        _segments_rows.resize(segment_count);
+        for (int64_t i = 0; i != segment_count; ++i) {
+            SegmentCacheHandle segment_cache_handle;
+            LOG_INFO("Rowset {} loading segment {}", rowset_id().to_string(), i);
+
+            RETURN_IF_ERROR(SegmentLoader::instance()->load_segment(
+                    std::static_pointer_cast<BetaRowset>(shared_from_this()), i,
+                    &segment_cache_handle, false, false));
+            const auto& tmp_segments = segment_cache_handle.get_segments();
+            _segments_rows[i] = tmp_segments[0]->num_rows();
+        }
+        return Status::OK();
+    }));
+    segment_rows->assign(_segments_rows.cbegin(), _segments_rows.cend());
+    return Status::OK();
+}
+```
+```cpp
+Status Segment::_open() {
+    _footer_pb = std::make_unique<SegmentFooterPB>();
+    RETURN_IF_ERROR(_parse_footer(_footer_pb.get()));
+    _pk_index_meta.reset(_footer_pb->has_primary_key_index_meta()
+                                 ? new PrimaryKeyIndexMetaPB(_footer_pb->primary_key_index_meta())
+                                 : nullptr);
+    
+}
+```
+
 
 ### 代码
 #### ScanLocalState::open
@@ -190,47 +337,8 @@ Status ScanLocalState<Derived>::_start_scanners(
     ...
 }
 ```
+每个 PipelineTask 创建的 Scanner 对象数量与 Tablet 数量以及 Tablet 中的行数有关，具体来说是一个策略问题。
 
-`Scan Node` 所在的 Pipeline 会有 ParallelPipelineTaskNum 个 PipelineTask
-每个 PipelineTask 会根据策略创建 X 个 Scanner 对象
-每个 PipelineTask 在 open 的时候会创建一个 ScannerContext，这个 ScannerContext 管理这个 PipelineTask 创建的 Scanner 对象。
-
-每个 PipelineTask 创建的 Scanner 对象数量与 Tablet 数量有关，具体来说是一个策略问题。
-
-ScanNodeOperator 会创建 parallel_pipeline_task 个 pipeline task，每个 pipeline task 会创建 X 个 scanner，X 等于多少是一个策略问题，总的 scanner 数量是 parallel_pipeline_task * X，策略的原则是这些所有的 scanner 去读所有涉及到的 tablet，互不重叠。PipelineTask A 只会从自己创建的那 X 个scanner中消费block，所以各个pipeline task 之间的数据也是不重叠的。
-```cpp
-template <typename Derived>
-Status ScanLocalState<Derived>::open(RuntimeState* state) {
-    ...
-    auto status = _eos ? Status::OK() : _prepare_scanners();
-    RETURN_IF_ERROR(status);
-    if (_scanner_ctx) {
-        RETURN_IF_ERROR(_scanner_ctx->init());
-    }
-}
-
-Status ScannerContext::init() {
-    ...
-    for (int i = 0; i < _max_thread_num; ++i) {
-        std::weak_ptr<ScannerDelegate> next_scanner;
-        if (_scanners.try_dequeue(next_scanner)) {
-            this->submit_scan_task(std::make_shared<ScanTask>(next_scanner));
-            _num_running_scanners++;
-        }
-    }
-}
-
-void ScannerContext::submit_scan_task(std::shared_ptr<ScanTask> scan_task) {
-    _scanner_sched_counter->update(1);
-    _num_scheduled_scanners++;
-    _scanner_scheduler->submit(shared_from_this(), scan_task);
-}
-```
-`_max_thread_num` 是根据策略计算出来的一个值，普通情况下可以假设这里的值等于 `Scanner` 对象的数量。
-
-那么对于每个 Scanner，我们会创建一个 `ScannerTask`，然后提交给 `_scanner_scheduler`
-
-PipelinTask 在 open 阶段调用所有 operator 的 open 函数，对于 OlapScanOperator 来说，就是完成上面的 Scanner 相关数据结构的创建，并且把 ScanTask 提交到 ScannerScheduler 中。
 ##### 创建 Scanner 的策略
 ###### tablet reader
 ```cpp
@@ -428,52 +536,6 @@ Status BlockReader::init(const ReaderParams& read_params) {
 
 }
 ```
-
-```
-Thread 1409 (Thread 0x7f3d64ecf640 (LWP 2232) "Scan_normal [wo"):
-#0  0x00007f40ce219117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
-#1  0x00007f40ce21be9b in pthread_cond_timedwait () from /lib/x86_64-linux-gnu/libc.so.6
-#2  0x000055927650ec8e in __gthread_cond_timedwait (__cond=0x7f3d06acbae0, __mutex=0x189, __abs_timeout=0x7f3d64ec73e8) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/x86_64-linux-gnu/c++/11/bits/gthr-default.h:872
-#3  std::__condvar::wait_until (this=0x7f3d06acbae0, __m=..., __abs_time=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/std_mutex.h:162
-#4  std::condition_variable::__wait_until_impl<std::chrono::duration<long, std::ratio<1l, 1000000000l> > > (this=0x7f3d06acbae0, __lock=..., __atime=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/condition_variable:222
-#5  std::condition_variable::wait_until<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > > (this=0x7f3d06acbae0, __lock=..., __atime=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/condition_variable:135
-#6  std::condition_variable::wait_for<long, std::ratio<1l, 1l> > (this=0x7f3d06acbae0, __lock=..., __rtime=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/condition_variable:163
-#7  0x0000559276513bd1 in doris::io::FileBlock::wait (this=0x7f3d06acba90) at /root/selectdb-core/be/src/io/cache/file_block.cpp:220
-#8  0x00005592764fcb11 in doris::io::CachedRemoteFileReader::read_at_impl (this=0x7f3d351dc990, offset=210759772, result=..., bytes_read=0x7f3d64ec77d0, io_ctx=<optimized out>) at /root/selectdb-core/be/src/io/cache/cached_remote_file_reader.cpp:272
-#9  0x00005592764fa43d in doris::io::FileReader::read_at (this=0x189, offset=0, result=..., bytes_read=0xffffffff, io_ctx=0x7f3b305bf420) at /root/selectdb-core/be/src/io/fs/file_reader.cpp:32
-#10 0x0000559276da65d0 in doris::segment_v2::PageIO::read_and_decompress_page (opts=..., handle=0x7f3d64ec7950, body=0x7f3d64ec7938, footer=0x7f3d64ec7888) at /root/selectdb-core/be/src/olap/rowset/segment_v2/page_io.cpp:153
-#11 0x0000559276dc626e in doris::segment_v2::ColumnReader::read_page (this=0x7f3d24118500, iter_opts=..., handle=0x7f3d64ec7950, page_body=0x7f3d64ec7938, footer=0x7f3d64ec7888, codec=0x5592840f9438 <doris::ZstdBlockCompression::instance()::s_instance>, pp=...) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.cpp:360
-#12 doris::segment_v2::FileColumnIterator::_read_data_page (this=0x7f3b305bf400, iter=...) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.cpp:1351
-#13 0x0000559276dc67ed in doris::segment_v2::FileColumnIterator::_load_next_page (this=0x189, this@entry=0x7f3b305bf400, eos=eos@entry=0x7f3d64ec7a28) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.cpp:1340
-#14 0x0000559276dc5228 in doris::segment_v2::FileColumnIterator::next_batch (this=0x7f3b305bf400, n=0x7f3d64ec7ad8, dst=..., has_null=0x7f3d64ec7b50) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.cpp:1208
-#15 0x0000559276e06ca8 in doris::segment_v2::ColumnIterator::next_batch (this=0x189, this@entry=0x7f4050f406f0, n=0x7f3d64ec7ad8, dst=...) at /root/selectdb-core/be/src/olap/rowset/segment_v2/column_reader.h:304
-#16 doris::segment_v2::SegmentIterator::_read_columns_by_index (this=this@entry=0x7f378e03fe00, nrows_read_limit=<optimized out>, nrows_read=@0x7f378e040548: 4064, set_block_rowid=<optimized out>) at /root/selectdb-core/be/src/olap/rowset/segment_v2/segment_iterator.cpp:2103
-#17 0x0000559276e09f20 in doris::segment_v2::SegmentIterator::_next_batch_internal (this=0x7f378e03fe00, block=0x7f39819771d0) at /root/selectdb-core/be/src/olap/rowset/segment_v2/segment_iterator.cpp:2474
-#18 0x0000559276e08aea in doris::segment_v2::SegmentIterator::next_batch(doris::vectorized::Block*)::$_0::operator()() const (this=<optimized out>) at /root/selectdb-core/be/src/olap/rowset/segment_v2/segment_iterator.cpp:2315
-#19 doris::segment_v2::SegmentIterator::next_batch (this=0x189, block=0x0) at /root/selectdb-core/be/src/olap/rowset/segment_v2/segment_iterator.cpp:2314
-#20 0x0000559276da536c in doris::segment_v2::LazyInitSegmentIterator::next_batch (this=0x7f3ccb2b4200, block=0x7f39819771d0) at /root/selectdb-core/be/src/olap/rowset/segment_v2/lazy_init_segment_iterator.h:44
-#21 0x0000559276cc5bf4 in doris::BetaRowsetReader::next_block (this=0x7f36b06e3200, block=0x7f39819771d0) at /root/selectdb-core/be/src/olap/rowset/beta_rowset_reader.cpp:380
-#22 0x000055927f62784d in doris::vectorized::VCollectIterator::Level0Iterator::_refresh (this=0x7f3981977260) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.h:256
-#23 doris::vectorized::VCollectIterator::Level0Iterator::refresh_current_row (this=0x7f3981977260) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.cpp:514
-#24 0x000055927f627ac5 in doris::vectorized::VCollectIterator::Level0Iterator::ensure_first_row_ref (this=0x189) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.cpp:493
-#25 0x000055927f62a032 in doris::vectorized::VCollectIterator::Level1Iterator::ensure_first_row_ref (this=0x7f3d3d279e80) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.cpp:692
-#26 0x000055927f624969 in doris::vectorized::VCollectIterator::build_heap (this=0x7f3cffc495c0, rs_readers=...) at /root/selectdb-core/be/src/vec/olap/vcollect_iterator.cpp:186
-#27 0x000055927f614c88 in doris::vectorized::BlockReader::_init_collect_iter (this=this@entry=0x7f3cffc49000, read_params=...) at /root/selectdb-core/be/src/vec/olap/block_reader.cpp:157
-#28 0x000055927f615ad1 in doris::vectorized::BlockReader::init (this=<optimized out>, read_params=...) at /root/selectdb-core/be/src/vec/olap/block_reader.cpp:229
-#29 0x0000559280343cf9 in doris::vectorized::NewOlapScanner::open (this=0x7f3d7864ac10, state=<optimized out>) at /root/selectdb-core/be/src/vec/exec/scan/new_olap_scanner.cpp:237
-#30 0x000055927a813486 in doris::vectorized::ScannerScheduler::_scanner_scan (ctx=std::shared_ptr<doris::vectorized::ScannerContext> (use count 7, weak count 1) = {...}, scan_task=std::shared_ptr<doris::vectorized::ScanTask> (use count 2, weak count 0) = {...}) at /root/selectdb-core/be/src/vec/exec/scan/scanner_scheduler.cpp:236
-#31 0x000055927a8142ad in doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}::operator()() const::{lambda()#1}::operator()() const (this=<optimized out>) at /root/selectdb-core/be/src/vec/exec/scan/scanner_scheduler.cpp:176
-#32 doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}::operator()() const (this=0x7f404552b1a0) at /root/selectdb-core/be/src/vec/exec/scan/scanner_scheduler.cpp:175
-#33 std::__invoke_impl<void, doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}&>(std::__invoke_other, doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}&) (__f=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/invoke.h:61
-#34 std::__invoke_r<void, doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}&>(doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}&) (__fn=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/invoke.h:111
-#35 std::_Function_handler<void (), doris::vectorized::ScannerScheduler::submit(std::shared_ptr<doris::vectorized::ScannerContext>, std::shared_ptr<doris::vectorized::ScanTask>)::$_1::operator()() const::{lambda()#1}>::_M_invoke(std::_Any_data const&) (__functor=...) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/std_function.h:291
-#36 0x00005592773bc688 in doris::ThreadPool::dispatch_thread (this=0x7f3d771afc00) at /root/selectdb-core/be/src/util/threadpool.cpp:543
-#37 0x00005592773b15d1 in std::function<void ()>::operator()() const (this=0x7f3d06acbb08) at /root/tools/ldb-16/bin/../lib/gcc/x86_64-linux-gnu/11/../../../../include/c++/11/bits/std_function.h:560
-#38 doris::Thread::supervise_thread (arg=0x7f3d771b4a80) at /root/selectdb-core/be/src/util/thread.cpp:498
-#39 0x00007f40ce21cac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
-#40 0x00007f40ce2ada04 in clone () from /lib/x86_64-linux-gnu/libc.so.6
-```
-
 #### ScannerContext::get_free_block
 #### Scanner::get_block_after_projects
 

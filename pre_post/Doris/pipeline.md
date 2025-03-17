@@ -14,6 +14,7 @@ Doris 里 FE 在规划 Plan 的时候只有 PlanNode 的概念，没有 Pipeline
 ```plantuml
 class RuntimeState {
     std::vector<PipelineXLocalStateBaseUPtr> _op_id_to_local_state;
+    std::unique_ptr<PipelineXSinkLocalStateBase> _sink_local_state;
 }
 
 class PipelineTask {
@@ -35,10 +36,20 @@ class PipelineXLocalStateBase {
     RuntimeState* _state;
 }
 
+class PipelineXSinkLocalStateBase {
+    DataSinkOperatorXBase* _parent;
+    RuntimeState* _state;
+}
+
 PipelineTask *-- RuntimeState
 RuntimeState *-- PipelineXLocalStateBase
+RuntimeState *-- PipelineXSinkLocalStateBase
 PipelineXLocalStateBase *-- RuntimeState
 PipelineXLocalStateBase *-- OperatorXBase
+PipelineXSinkLocalStateBase *-- RuntimeState
+PipelineXSinkLocalStateBase *-- DataSinkOperatorXBase
 PipelineTask *-- OperatorXBase
-
+DataSinkOperatorXBase <-- OperatorBase
+OperatorXBase <-- OperatorBase
 ```
+PipelineXLocalStateBase 是 Operator 级别的，一个 Operator 对应一个 PipelineXLocalStateBase。
