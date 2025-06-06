@@ -112,7 +112,7 @@ show tablets from debug_storage
 ```
 目录结构：
 ```text
-SharedId
+ShardId
     |
     TabletId
         |
@@ -120,7 +120,7 @@ SharedId
             |
             RowSetId_SegmentId.dat
 ```
-22: SharedId
+22: ShardId
 2746075：TabletId
 1366655391: SchemaHash
 0200000000000034024daaf90dc78b9be0dee7c6939de5a8_0.dat: segment 文件，其中 `0200000000000034024daaf90dc78b9be0dee7c6939de5a8` 是 rowset_id，
@@ -162,7 +162,7 @@ show tablets from debug_storage
 [hezhiqiang@VM-10-8-centos 1366655391]$ ls
 0200000000000034024daaf90dc78b9be0dee7c6939de5a8_0.dat  020000000000003c024daaf90dc78b9be0dee7c6939de5a8_0.dat
 ```
-我的猜测：每次 alter/compaction 会生成一个新的 rowset 目录。
+我的猜测：每次 insert/compaction 会生成一个新的 rowset ID。
 
 ###
 ```plantuml
@@ -174,11 +174,71 @@ class TabletReader {
 
 class VerticalBlockReader {
     - Function* _next_block_func;
-    - std::shared_ptr<RowwiseIterator> _vcollect_iter
+    - std::shared_ptr<RowwiseIterator> _rowwise_iter
+}
+
+class BlockReader {
+    VCollectIterator _vcollect_iter;
+    std::vector<AggregateFunctionPtr> _agg_functions;
+    std::vector<AggregateDataPtr> _agg_places;
+}
+
+class Level0Iterator {
+    RowsetReader _rs_reader;
+    std::shared_ptr<Block> _block;
 }
 
 TabletReader <-- VerticalBlockReader
+TabletReader <-- BlockReader
+BlockReader *-- VCollectIterator
+VCollectIterator *-- Level0Iterator
+VCollectIterator *-- Level1Iterator
+Level0Iterator *-- RowsetReader
+RowsetReader <-- BetaRowsetReader
 ```
+```text
+BlockReader::init
+|
+|-BlockReader::_init_collect_iter
+    |
+    |-BlockReader::_capture_rs_readers
+    |
+    |遍历每个 rowset，为每个rowset初始化一个rs_reader
+    |
+    |-VCollectIterator::build_heap
+```
+
+```cpp
+VCollectIterator::build_heap(std::vector<RowsetReaderSharedPtr>& rs_readers) {
+    auto level1_iter = std::make_unique<Level1Iterator>(std::move(_children), _reader, _merge,
+                                                            _is_reverse, _skip_same);
+        ...
+        _children.clear();
+        level1_iter->init_level0_iterators_for_union();
+        RETURN_IF_ERROR(level1_iter->ensure_first_row_ref());
+        _inner_iter = std::move(level1_iter);
+}
+
+Status VCollectIterator::Level1Iterator::ensure_first_row_ref() {
+    for (auto iter = _children.begin(); iter != _children.end();) {
+        auto s = (*iter)->ensure_first_row_ref();
+    }
+}
+
+Status VCollectIterator::Level0Iterator::ensure_first_row_ref() {
+    DCHECK(!_get_data_by_ref);
+    auto s = refresh_current_row();
+    _ref = {_block, 0, false};
+
+    return s;
+}
+
+Status VCollectIterator::Level0Iterator::refresh_current_row() {
+
+}
+```
+
+----------------------
 ### 初始化
 ```plantuml
 class TabletMeta {
@@ -640,3 +700,98 @@ Status VerticalMaskMergeIterator::next_batch(Block* block) {
     
 }
 ```
+
+
+
+```plantuml
+class SegmentIterator {
+    std::vector<std::unique_ptr<IndexIterator>> _index_iterators;
+    std::vector<std::unique_ptr<ColumnIterator>> _column_iterators;
+    std::map<int32_t, std::unique_ptr<ColumnReader>> _column_readers;
+}
+
+class IndexIterator {
+
+}
+
+class ColumnReader {
+
+}
+
+SegmentIterator *-- IndexIterator
+```
+
+```text
+Segment::new_index_iterator(...) : IntexIterator
+|
+|- _index_file_reader = std::make_shared<XIndexFileReader>
+|
+|- ColumnReader::new_index_iterator(_index_file_reader, index_meta ...) : IndexIterator
+    |
+    |-ColumnReader::_load_index_index
+        |
+        |-_index_reader = std::make_shared<AnnIndexReader>/std::make_shared<FullTextIndexReader>
+    |
+    |-IndexReader->new_iterator() : IndexIterator
+```
+
+
+
+
+```plantuml
+class VCollectIterator {
+    std::unique_ptr<LevelIterator> _inner_iter;
+    std::list<std::unique_ptr<LevelIterator>> _children;
+}
+
+class LevelIterator {
+    Status next(Block* block);
+}
+class Level1Iterator {
+    std::list<std::unique_ptr<LevelIterator>> _children;
+    TabletReader* _reader = nullptr;
+    Status _normal_next(Block* block);
+    Status _merge_next(Block* block);
+}
+class Level0Iterator {
+    RowsetReaderSharedPtr _rs_reader;
+    TabletReader* _reader;
+    std::shared_ptr<Block> _block;
+}
+
+class RowsetReader {
+    std::unique_ptr<RowwiseIterator> _iterator;
+}
+
+class TabletReader {
+    std::vector<uint32_t> _return_columns;
+    RowsetReaderContext _reader_context;
+    TabletSchemaSPtr _tablet_schema;
+}
+
+class VerticalBlockReader {
+    std::shared_ptr<RowwiseIterator> _vcollect_iter;
+}
+
+class BlockReader {
+    VCollectIterator _vcollect_iter;
+}
+
+class RowwiseIterator {}
+
+VCollectIterator *-- LevelIterator
+Level0Iterator -up-> LevelIterator
+Level0Iterator *-- RowsetReader
+Level0Iterator *-- TabletReader
+Level1Iterator -up-> LevelIterator
+Level1Iterator *-- TabletReader
+VerticalBlockReader -up-> TabletReader
+BlockReader -up-> TabletReader
+BetaRowsetReader -up-> RowsetReader
+SegmentIterator -up-> RowwiseIterator
+VerticalHeapMergeIterator -up-> RowwiseIterator
+VUnionIterator -up-> RowwiseIterator
+LazyInitSegmentIterator -up-> RowwiseIterator
+RowsetReader *-right- RowwiseIterator
+```
+

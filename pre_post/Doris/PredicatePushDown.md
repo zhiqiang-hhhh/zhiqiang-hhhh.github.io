@@ -1,3 +1,46 @@
+```plantuml
+class VExprContext {
+  + Status prepare(RuntimeState* state, const RowDescriptor& row_desc);
+  + Status open(RuntimeState* state);
+  + Status clone(RuntimeState* state, VExprContextSPtr& new_ctx);
+  + Status execute(Block* block, int* result_column_id);
+  + VExprSPtr _root;
+}
+
+class VExpr {
+  + Status prepare(RuntimeState* state, const RowDescriptor& row_desc, VExprContext* context)
+  + Status open(RuntimeState* state, VExprContext* context,
+                        FunctionContext::FunctionStateScope scope);
+  + Status execute(VExprContext* context, Block* block, int* result_column_id)
+  + Status evaluate_inverted_index(VExprContext* context, uint32_t segment_num_rows)
+  + Status execute_runtime_fitler(VExprContext* context, Block* block,
+                                          int* result_column_id, ColumnNumbers& args)
+  TExprNodeType::type _node_type;
+  TExprOpcode::type _opcode;
+  TFunction _fn;
+  VExprSPtrs _children; // in few hundreds
+}
+
+struct TExprNodeType {
+  XXX_LITERAL
+  SLOT_REF
+  MATCH_PRED
+  ...
+}
+
+struct TExprOpcode {
+  COMPOUND_NOT = 1,
+  COMPOUND_AND = 2,
+  COMPOUND_OR = 3,
+  ...
+}
+
+VExprContext *-- VExpr
+VExpr *-right- TExprNodeType
+VExpr *-right- TExprOpcode
+VExpr *-right- TFunction
+```
+
 `select count(CounterID) from hits_10m where CounterID in (4679,75171)`
 
 上述 sql 中 `OLAP_SCAN_NODE` 对应在 BE 上看到的 Plan 精简后如下所示：
@@ -100,7 +143,13 @@ Status OperatorXBase::init(const TPlanNode& tnode, RuntimeState* /*state*/) {
     ...
 }
 ```
-逻辑很简单，就是把上述的 PlanNode 转成 `OperatorXBase._conjuncts` 数据结构，在 BE 上每个 `_conjuncts` 相当于是一个表达式。
+任何命题都可以划分成一组 OR 表达式最后求 AND 或者一组 AND 表达式最后求 OR 的范式。
+
+前者称为合取范式（最后合取），后者称为析取范式（最后析取）
+
+Doris 在处理谓词的时候采用的是合取范式，即优化器会把一组谓词拆成一个或者多个子表达式，最终的结果要求执行层对每个子表达式求AND。
+
+代码中的 conjuncts 就是组成合取范式的基本表达式。
 
 ```cpp
 template <typename Derived>
@@ -135,16 +184,92 @@ template <typename Derived>
 Status ScanLocalState<Derived>::_normalize_predicate(
     const vectorized::VExprSPtr& conjunct_expr_root, vectorized::VExprContext* context,
         vectorized::VExprSPtr& output_expr) {
-    // bool is_and_expr() const { return _fn.name.function_name == "and"; }
-    static constexpr auto is_leaf = [](auto&& expr) { return !expr->is_and_expr(); };
-
+    ...
 }
 ```
-先对这里的名词作解释：`conjuncts` 是包含了一组表达式的集合，这个集合中，不会包含 or 表达式，也不会包含括号。FE 在 Plan 阶段会先把 where 条件后的表达式根据语意进行拆分。等到 BE 这里处理的时候，看到的就已经是不包含 `or` 的表达式集合了。比如 `(A and B) or (C and D)` 就是两个 conjunct。
+`_normalize_conjuncts`的作用是把谓词转成归一化的 ColumnValueRange。
 
-`predicate` 指的是构成 `conjunct` 的表达式。比如 `A and B` 这个 conjunct 就包含两个 predicate。
+在 `OlapScanLocalState::_build_key_ranges_and_filters` 里面，如果某个 key 列上有谓词，会尝试从 ColumnValueRange 里面提取出一个 ScanKey
+·_build_key_ranges_and_filters 里面转成 key range 或者 filter
 
-----
+```cpp
+OlapScanLocalState::_build_key_ranges_and_filters() {
+  ...
+  for (int idx = 0; idx < key_column_names.size(); ++idx) {
+    auto iter = _colname_to_value_range.find(column_names[idx]);
+
+  }
+  const auto& column_value_range = iter->second;
+
+  RETURN_IF_ERROR(std::visit(
+      [&](auto&& range) {
+          // make a copy or range and pass to extend_scan_key, keep the range unchanged
+          // because extend_scan_key method may change the first parameter.
+          // but the original range may be converted to olap filters, if it's not a exact_range.
+          auto temp_range = range;
+          if (range.get_fixed_value_size() <= p._max_pushdown_conditions_per_column) {
+              RETURN_IF_ERROR(
+                      _scan_keys.extend_scan_key(temp_range, p._max_scan_key_num,
+                                                  &exact_range, &eos, &should_break));
+              if (exact_range) {
+                  _colname_to_value_range.erase(iter->first);
+              }
+          } else {
+              // if exceed max_pushdown_conditions_per_column, use whole_value_rang instead
+              // and will not erase from _colname_to_value_range, it must be not exact_range
+              temp_range.set_whole_value_range();
+              RETURN_IF_ERROR(
+                      _scan_keys.extend_scan_key(temp_range, p._max_scan_key_num,
+                                                  &exact_range, &eos, &should_break));
+          }
+          return Status::OK();
+      },
+      column_value_range));
+  ...
+  for (auto& iter : _colname_to_value_range) {
+    std::vector<FilterOlapParam<TCondition>> filters;
+    std::visit([&](auto&& range) { range.to_olap_filter(filters); }, iter.second);
+
+    for (const auto& filter : filters) {
+        _olap_filters.emplace_back(filter);
+    }
+  }
+}
+```
+```cpp
+class OlapScanKeys {
+  ...
+  std::vector<OlapTuple> _begin_scan_keys;
+  std::vector<OlapTuple> _end_scan_keys;
+  bool _has_range_value;
+  bool _begin_include;
+  bool _end_include;
+  bool _is_convertible;
+};
+
+class OlapTuple {
+  ...
+  std::vector<std::string> _values;
+  std::vector<bool> _nulls;
+}
+
+Status OlapScanKeys::extend_scan_key(ColumnValueRange<primitive_type>& range,
+                                     int32_t max_scan_key_num, bool* exact_value, bool* eos,
+                                     bool* should_break) {
+    
+}
+```
+OlapScanKeys 的核心数据成员是一个二维数组。其中，_begin_scan_keys 的 size 等于 谓词中涉及到的key列的数量，每一个 key 列对应一个 OlapTuple。
+一个 key 列可能被多个谓词同时读，所以每一个 OlapTuple 都是一个数组。
+
+```cpp
+Status OlapScanKeys::get_key_range(std::vector<std::unique_ptr<OlapScanRange>>* key_range) {}
+```
+
+
+
+
+
 ```plantuml
 class ColumnValueRange {
   - _column_name : string
@@ -233,4 +358,79 @@ Status LazyInitSegmentIterator::init(const StorageReadOptions& /*opts*/) {
     RETURN_IF_ERROR(_segment->new_iterator(_schema, _read_options, &_inner_iterator));
     return _inner_iterator->init(_read_options);
 }
+```
+
+
+```plantuml
+interface ColumnPredicate {
+#  Status evaluate(
+    const vectorized::IndexFieldNameAndTypePair& name_with_type,InvertedIndexIterator* iterator, uint32_t num_rows, roaring::Roaring* bitmap)
+}
+class MatchPredicate {
+
+}
+
+MatchPredicate -up-> ColumnPredicate
+```
+
+```text
+
+BetaRowsetReader::next_block
+|
+|-BetaRowsetReader::_init_iterator_once()
+  |
+  |-BetaRowsetReader::_init_iterator()
+  |
+  |-LazyInitSegmentIterator::init
+    |-Segment::new_iterator
+      |-SegmentIterator::init
+      |
+      |-SegmentIterator::init_iterators()
+        |
+        |-SegmentIterator::_init_index_iterators()
+        |
+        |-Segment::new_index_iterator
+          |
+          |-_inverted_index_file_reader = std::make_shared<InvertedIndexFileReader>
+          |
+          |-ColumnReader::_ensure_inverted_index_loaded(_inverted_index_file_reader)
+          | |
+          | |-ColumnReader::_load_inverted_index
+          |   |
+          |   |-_inverted_index_reader = InvertedIndexReader::create_shared（倒排索引这里的实现很奇怪，只是创建了 reader 没有真正读盘构建内存索引）
+          |
+          |-_inverted_index_iterator = ColumnReader::new_inverted_index_iterator
+
+
+
+
+SegmentIterator::_next_batch_internal(vectorized::Block* block)
+|
+|-SegmentIterator::_lazy_init()
+| |
+| |-SegmentIterator::_get_row_ranges_by_column_conditions()
+|   |
+|   |-SegmentIterator::_apply_index_expr()
+|   |
+|   |-SegmentIterator::_get_row_ranges_from_conditions()
+|
+|    
+|
+|-SegmentIterator::_read_columns_by_index
+
+```
+
+
+```TExprNodeType
+ScanLocalState::open
+|
+|-RuntimeFilterConsumerHelper::acquire_runtime_filter
+  |
+  |-RuntimeFilterConsumer::acquire_expr
+    |
+    |-RuntimeFilterConsumer::_apply_ready_expr
+      |
+      |-VRuntimeFilterWrapper::attach_profile_counter
+|
+|-process_conjuncts()
 ```

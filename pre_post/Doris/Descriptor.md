@@ -18,7 +18,7 @@ desc_tbl = {
 [1] = TExpr {
         01: nodes (list) = list<struct>[1] {
           [0] = TExprNode {
-            01: node_type (i32) = 16,
+            01: node_type (i32) = 16(SLOT_REF),
             02: type (struct) = TTypeDesc {
               01: types (list) = list<struct>[1] {
                 [0] = TTypeNode {
@@ -188,3 +188,142 @@ RowDescriptor::RowDescriptor(const DescriptorTbl& desc_tbl, const std::vector<TT
     init_has_varlen_slots();
 }
 ```
+
+## Projection
+```
+mysql> explain verbose select k2 from test_ifnull where k1 = 1;
+--------------
+explain verbose select k2 from test_ifnull where k1 = 1
+--------------
+
++--------------------------------------------------------------------------------------------------------------------+
+| Explain String(Nereids Planner)                                                                                    |
++--------------------------------------------------------------------------------------------------------------------+
+| PLAN FRAGMENT 0                                                                                                    |
+|   OUTPUT EXPRS:                                                                                                    |
+|     k2[#2]                                                                                                         |
+|   PARTITION: UNPARTITIONED                                                                                         |
+|                                                                                                                    |
+|   HAS_COLO_PLAN_NODE: false                                                                                        |
+|                                                                                                                    |
+|   VRESULT SINK                                                                                                     |
+|      MYSQL_PROTOCAL                                                                                                |
+|                                                                                                                    |
+|   1:VEXCHANGE                                                                                                      |
+|      offset: 0                                                                                                     |
+|      distribute expr lists:                                                                                        |
+|      tuple ids: 1N                                                                                                 |
+|                                                                                                                    |
+| PLAN FRAGMENT 1                                                                                                    |
+|                                                                                                                    |
+|   PARTITION: HASH_PARTITIONED: k1[#0]                                                                              |
+|                                                                                                                    |
+|   HAS_COLO_PLAN_NODE: false                                                                                        |
+|                                                                                                                    |
+|   STREAM DATA SINK                                                                                                 |
+|     EXCHANGE ID: 01                                                                                                |
+|     UNPARTITIONED                                                                                                  |
+|                                                                                                                    |
+|   0:VOlapScanNode(102)                                                                                             |
+|      TABLE: demo.test_ifnull(test_ifnull), PREAGGREGATION: ON                                                      |
+|      PREDICATES: (k1[#0] = 1)                                                                                      |
+|      partitions=1/1 (test_ifnull)                                                                                  |
+|      tablets=1/10, tabletList=1738919883441                                                                        |
+|      cardinality=1, avgRowSize=2100.0, numNodes=1                                                                  |
+|      pushAggOp=NONE                                                                                                |
+|      final projections: k2[#1]                                                                                     |
+|      final project output tuple id: 1                                                                              |
+|      tuple ids: 0                                                                                                  |
+|                                                                                                                    |
+| Tuples:                                                                                                            |
+| TupleDescriptor{id=0, tbl=test_ifnull}                                                                             |
+|   SlotDescriptor{id=0, col=k1, colUniqueId=0, type=tinyint, nullable=true, isAutoIncrement=false, subColPath=null} |
+|   SlotDescriptor{id=1, col=k2, colUniqueId=1, type=float, nullable=true, isAutoIncrement=false, subColPath=null}   |
+|                                                                                                                    |
+| TupleDescriptor{id=1, tbl=test_ifnull}                                                                             |
+|   SlotDescriptor{id=2, col=k2, colUniqueId=1, type=float, nullable=true, isAutoIncrement=false, subColPath=null}   |
+|                                                                                                                    |
+|                                                                                                                    |
+|                                                                                                                    |
+|                                                                                                                    |
+| ========== STATISTICS ==========                                                                                   |
++--------------------------------------------------------------------------------------------------------------------+
+48 rows in set (0.01 sec)
+```
+
+## Scan 的时候 Plan中的 slot id 与元数据中的 列对齐
+
+
+
+
+```cpp
+Status OlapScanner::_init_return_columns() {
+    for (auto* slot : _output_tuple_desc->slots()) {
+        if (!slot->is_materialized()) {
+            continue;
+        }
+
+        // variant column using path to index a column
+        int32_t index = 0;
+        auto& tablet_schema = _tablet_reader_params.tablet_schema;
+        if (slot->type().is_variant_type()) {
+            index = tablet_schema->field_index(PathInData(
+                    tablet_schema->column_by_uid(slot->col_unique_id()).name_lower_case(),
+                    slot->column_paths()));
+        } else {
+            index = slot->col_unique_id() >= 0 ? tablet_schema->field_index(slot->col_unique_id())
+                                               : tablet_schema->field_index(slot->col_name());
+        }
+
+        if (index < 0) {
+            return Status::InternalError(
+                    "field name is invalid. field={}, field_name_to_index={}, col_unique_id={}",
+                    slot->col_name(), tablet_schema->get_all_field_names(), slot->col_unique_id());
+        }
+        _return_columns.push_back(index);
+        if (slot->is_nullable() && !tablet_schema->column(index).is_nullable()) {
+            _tablet_columns_convert_to_null_set.emplace(index);
+        } else if (!slot->is_nullable() && tablet_schema->column(index).is_nullable()) {
+            return Status::Error<ErrorCode::INVALID_SCHEMA>(
+                    "slot(id: {}, name: {})'s nullable does not match "
+                    "column(tablet id: {}, index: {}, name: {}) ",
+                    slot->id(), slot->col_name(), tablet_schema->table_id(), index,
+                    tablet_schema->column(index).name());
+        }
+    }
+
+    if (_return_columns.empty()) {
+        return Status::InternalError("failed to build storage scanner, no materialized slot!");
+    }
+    return Status::OK();
+}
+```
+
+
+```text
+Status OlapScanner::open(RuntimeState* state)
+|
+|-TabletReader::_init_params(const ReaderParams& read_params)
+  |
+  |-TabletReader::_init_return_columns(read_params);
+    |...
+    |_return_columns = read_params.return_columns;
+    |      _tablet_columns_convert_to_null_set = read_params.tablet_columns_convert_to_null_set;
+    |      for (auto id : read_params.return_columns) {
+    |          if (_tablet_schema->column(id).is_key()) {
+    |              _key_cids.push_back(id);
+    |          } else {
+    |              _value_cids.push_back(id);
+    |          }
+    |      }
+```
+```text
+SegmentIterator::init_iterators()
+|
+|-SegmentIterator::_init_return_column_iterators()
+  |
+  for cid : _schema->column_ids()
+    _column_iterator[cid] = _segment->new_column_iterator(_opts.tablet_schema->column(cid))
+
+```
+schema->column_ids 中的列，必须是 segment 中存在的列
