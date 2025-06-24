@@ -1,4 +1,26 @@
-### Create table 如何执行
+### Create table
+
+```java
+public class InternalCatalog {
+    public boolean createTable(CreateTableStmt stmt) throws UserException {
+        ...
+        return createOlapTable(Database db, CreateTableStmt stmt);
+    }
+
+    private boolean createOlapTable(Database db, CreateTableStmt stmt) throws UserException {
+        ...
+        // set base index meta
+        olapTable.setIndexMeta(baseIndexId, tableName, baseSchema, schemaVersion, schemaHash, shortKeyColumnCount,
+                baseIndexStorageType, keysType, olapTable.getIndexes());
+        ...
+    }
+}
+```
+What is base index:
+* doris 默认自带主键索引
+
+所以这里的 base index 指的就是主键索引
+
 
 doris 的表结构分为两层，第一层是 partition 分区，第二层是 tablet 分桶。
 因此建表的时候的逻辑是先创建分区，然后在创建分桶，创建副本。
@@ -65,7 +87,13 @@ struct TCreateTabletReq {
 3. 把 tablet meta 添加到 tablet maneger 里
 4. 把 tablet meta 持久化
 
-### Alter table
+
+### Schema Change
+
+对于 LightSchemaChange，只改 FE 的 meta，不会直接改 BE 内存的 meta。
+BE 内存的 meta 会等到下一次导入时进行更新。
+在 BE 内存 meta 与 FE meta 不同的期间，查询将会使用 Plan 中的 TabletSchema 来规划 Block 的结构。
+
 
 ```java
 class SchemaChangeHander {
@@ -79,5 +107,37 @@ class SchemaChangeHander {
         // 3. write edit log
         Env.getCurrentEnv().getEditLog().logAlterJob(schemaChangeJob);
     }
+
+
+    private boolean processModifyColumn(ModifyColumnClause alterClause, OlapTable olapTable,
+                                        Map<Long, LinkedList<Column>> indexSchemaMap) throws DdlException {
+        if (lightSchemaChange) {
+            ...
+        } else {
+            createJob(rawSql, db.getId(), olapTable, indexSchemaMap, propertyMap, newIndexes, false);
+        }
+    }
+}    
+```
+
+```cpp
+SchemaChangeJob::SchemaChangeJob(StorageEngine& local_storage_engine,
+                                 const TAlterTabletReqV2& request, const std::string& job_id)
+        : _local_storage_engine(local_storage_engine) {
+    _base_tablet = _local_storage_engine.tablet_manager()->get_tablet(request.base_tablet_id);
+    _new_tablet = _local_storage_engine.tablet_manager()->get_tablet(request.new_tablet_id);
+    if (_base_tablet && _new_tablet) {
+        _base_tablet_schema = std::make_shared<TabletSchema>();
+        _base_tablet_schema->update_tablet_columns(*_base_tablet->tablet_schema(), request.columns);
+        // The request only include column info, do not include bitmap or bloomfilter index info,
+        // So we also need to copy index info from the real base tablet
+        _base_tablet_schema->update_index_info_from(*_base_tablet->tablet_schema());
+        // During a schema change, the extracted columns of a variant should not be included in the tablet schema.
+        // This is because the schema change for a variant needs to ignore the extracted columns.
+        // Otherwise, the schema types in different rowsets might be inconsistent. When performing a schema change,
+        // the complete variant is constructed by reading all the sub-columns of the variant.
+        _new_tablet_schema = _new_tablet->tablet_schema()->copy_without_variant_extracted_columns();
+    }
+    _job_id = job_id;
 }
 ```

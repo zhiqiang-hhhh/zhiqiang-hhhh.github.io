@@ -10,8 +10,6 @@
 
 <!-- /code_chunk_output -->
 
-
-
 # Sink
 
 ```plantuml
