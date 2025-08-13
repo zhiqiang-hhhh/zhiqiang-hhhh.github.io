@@ -1,0 +1,1 @@
+Now before we plug this text into neural networks, we have to decide how we going to represent this in how we gona to feed it.
