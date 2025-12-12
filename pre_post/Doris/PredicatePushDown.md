@@ -143,11 +143,27 @@ Status OperatorXBase::init(const TPlanNode& tnode, RuntimeState* /*state*/) {
     ...
 }
 ```
-任何命题都可以划分成一组 OR 表达式最后求 AND 或者一组 AND 表达式最后求 OR 的范式。
+任何布尔表达式都可以转换成：
 
-前者称为合取范式（最后合取），后者称为析取范式（最后析取）
+* CNF（Conjunctive Normal Form，合取范式）
+
+最终是 AND，里面的每一项是 OR 子句： `(a ∨ b ∨ c) ∧ (d ∨ e)`
+
+* DNF（Disjunctive Normal Form，析取范式）
+
+最终是 OR，里面是 AND 子句：`(a ∧ b) ∨ (c ∧ d)`
 
 Doris 在处理谓词的时候采用的是合取范式，即优化器会把一组谓词拆成一个或者多个子表达式，最终的结果要求执行层对每个子表达式求AND。
+
+比如对于 `WHERE a > 10 AND b = 3 AND (c = 1 OR c = 2)` Doris 优化器会把它的结构改成
+```
+conjuncts = [
+    a > 10,
+    b = 3,
+    (c = 1 OR c = 2)
+]
+```
+
 
 代码中的 conjuncts 就是组成合取范式的基本表达式。
 
