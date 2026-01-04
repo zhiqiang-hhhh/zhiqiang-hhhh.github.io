@@ -1,76 +1,91 @@
+
+<!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
+
+<!-- code_chunk_output -->
+
+- [主方法求解递归式](#主方法求解递归式)
+- [比较排序](#比较排序)
+  - [插入排序](#插入排序)
+  - [归并排序(Merge Sort)](#归并排序merge-sort)
+  - [堆排序](#堆排序)
+    - [优先队列(Priority queues)](#优先队列priority-queues)
+  - [快速排序](#快速排序)
+    - [Partition 过程](#partition-过程)
+    - [快排性能分析](#快排性能分析)
+  - [线性时间排序](#线性时间排序)
+    - [计数排序](#计数排序)
+    - [基数排序](#基数排序)
+    - [桶排序](#桶排序)
+
+<!-- /code_chunk_output -->
+
+
 # 主方法求解递归式
 
 常需要求解递归式来计算算法的运行时间。递归树方法不细说，较为直观。主方法提供一种菜谱式方法，熟悉之后使用起来最方便：
 
 如果某个算法，将规模为 n 的问题分解为 a 个子问题，每个子问题规模为 n/b，其中 a 和 b 均为正常数。a 个子问题递归地求解，每个花费时间 T(n/b)，且将子问题分解与合并子问题花费的时间为函数 f(n)。则算法的运行时间可以描述为 T(n) = aT(n/b) + f(n)
 
-1. 若对某个常数 ε > 0，有 $f(n)=O(n^{log_{b}a - \epsilon})$，则 $T(n)=\Theta(n^{log_{b}a})$
-2. 若 $f(n)=\Theta(n^{log_{b}a})$，则 $T(n) = \Theta(n^{log_{b}a}lgn)$
-3. 若对某个常数 ε > 0，有 $f(n)=\Omega(n^{log_{b}a + \epsilon})$，且对某个常数c<1和所有足够大的 n 有 $af(n/b) \leq cf(n)$，则 $T(n) = \Theta(f(n))$
+1. 若对某个常数 ε > 0，有 $f(n)=O(n^{log_{b}a - \epsilon})$，则 $T(n)=O(n^{log_{b}a})$
+2. 若 $f(n)=O(n^{log_{b}a})$，则 $T(n) = O(n^{log_{b}a}lgn)$
+3. 若对某个常数 ε > 0，有 $f(n)=\Omega(n^{log_{b}a + \epsilon})$，且对某个常数c<1和所有足够大的 n 有 $af(n/b) \leq cf(n)$，则 $T(n) = O(f(n))$
 
-简单理解，主定理的做法为：将函数 $f(n)$ 与 $n^{\log_{b}a}$ 进行大小比较，两个函数较大者决定了解的值。若 $n^{\log_{b}a}$ 较大，则解为$T(n)=\Theta(n^{log_{b}a})$，若两者相当，则乘一个对数因子，解为$T(n) = \Theta(n^{log_{b}a}lgn) = \Theta(f(n)lgn)$，若 f(n) 较大，且满足某个条件(该条件在多项式界中多数满足)，则解为$\Theta(f(n))$
+简单理解，主定理的做法为：将函数 $f(n)$ 与 $n^{\log_{b}a}$ 进行大小比较，两个函数较大者决定了解的值。若 $n^{\log_{b}a}$ 较大，则解为$T(n)=O(n^{log_{b}a})$，若两者相当，则乘一个对数因子，解为$T(n) = O(n^{log_{b}a}lgn) = O(f(n)lgn)$，若 f(n) 较大，且满足某个条件(该条件在多项式界中多数满足)，则解为$O(f(n))$
 # 比较排序
-[TOC]
 ---
 原地排序(Sorted in place)：在任何时刻，最多只有常数个数字是存储在数组之外的。
 | 算法                    | 最坏运行时间       | 平均/期望运行时间  |
 | ----------------------- | ------------------ | ------------------ |
-| 插入排序                | $\Theta(n^2)$      | $\Theta(n^2)$      |
-| 归并排序                | $\Theta(n\log n)$  | $\Theta(n\log n)$  |
+| 插入排序                | $O(n^2)$      | $O(n^2)$      |
+| 归并排序                | $O(n\log n)$  | $O(n\log n)$  |
 | 堆排序                  | $O(n\log n)$       | ---                |
-| 快速排序                | $\Theta(n^2)$      | $\Theta(n\log n)$  |
-| 计数排序(Counting Sort) | $\Theta(k + n)$    | $\Theta(k + n)$    |
-| 基数排序(Radix Sort)    | $\Theta(d(n + k))$ | $\Theta(d(n + k))$ |
-| 桶排序(Bucket Sort)     | $\Theta(n^2)$      | $\Theta(n^2)$      |
+| 快速排序                | $O(n^2)$      | $O(n\log n)$  |
+| 计数排序(Counting Sort) | $O(k + n)$    | $O(k + n)$    |
+| 基数排序(Radix Sort)    | $O(d(n + k))$ | $O(d(n + k))$ |
+| 桶排序(Bucket Sort)     | $O(n^2)$      | $O(n^2)$      |
 插入排序，归并排序，堆排序，快速排序都是比较排序：通过比较元素大小来决定输入数组元素的位置。通过决策树模型可以证明比较排序的性能限制。通过该模型可以证明在规模为 n 的输入上，任何比较排序最差运行时间的下限为$\Omega(n\log n)$，这表明堆排序和归并排序具有渐进最优运行时间。
 
 通过不比较元素的方法，可以突破$\Omega(n\log n)$的下界。比如比较排序。
 
-
 ## 插入排序
-运行时间$\Theta(n^2)$，原地排序
+运行时间$O(n^2)$，原地排序。与打牌时整理手中的牌序相似。要求升序。
+```
+INSERTION-SORT(A)
+    for j=2 to length[A]
+        do key = A[j]
+            // Insert A[j] in to sorted sequence A[1..j-1]
+            i = j-1
+            while i>0 and A[i]>key
+                do A[i+1] = A[i]
+                    i = i-1
+            A[i+1] = key
+```
 
-与打牌时整理手中的牌序相似。要求升序。
-
-    INSERTION-SORT(A)
-        for j=2 to length[A]
-            do key = A[j]
-                // Insert A[j] in to sorted sequence A[1..j-1]
-                i = j-1
-                while i>0 and A[i]>key
-                    do A[i+1] = A[i]
-                        i = i-1
-                A[i+1] = key
-
-`j`标记第一个待排序元素的位置，`A[1...j-1]`已经按照升序排好。
-
-插入排序最坏情况下的运行时间为$O(n^2)$，最好情况下运行时间为$O(n)$，且插入排序是一个原地排序。
+`j` 标记第一个待排序元素的位置，`A[1...j-1]` 已经按照升序排好。插入排序最坏情况下的运行时间为$O(n^2)$，最好情况下运行时间为$O(n)$，且插入排序是一个原地排序。
 ```c++
-vector<int>& Solution::insertSort(vector<int>& nums){
-    if(nums.size()==0 || nums.size()==1){
+class Solution {
+public:
+    vector<int> sortArray(vector<int>& nums) {
+        int len = nums.size();
+        for (int i = 0; i < len; ++i) {
+            int cur = nums[i];
+
+            for (int j = i - 1; j >= 0; --j) {
+                if (nums[j] > cur) {
+                    std::swap(nums[j], nums[j+1]);
+                } else {
+                    break;
+                }
+            }
+        }
         return nums;
     }
-    
-    for(std::size_t xpos=1; xpos != nums.size(); ++xpos){
-        
-        const int key = nums.at(xpos);
-       // std::cout << key << endl;
-        int subpos = xpos - 1;
-        
-        while(subpos >= 0 && nums.at(subpos) >= key){
-            nums.at(subpos + 1) = nums.at(subpos);
-            --subpos;
-        }
-        nums.at(subpos + 1) = key;
-        }
-    
-    return nums;
-}
+};
 ```
 
 
 ## 归并排序(Merge Sort)
-运行时间 $\Theta(n\log n$)，非原地排序。
+运行时间 $O(n\log n$)，非原地排序。
 
 $T(n) = 2T(n/2) + n$
 
@@ -257,7 +272,7 @@ ListNode* Solution::merge(ListNode* l1, ListNode* l2){
 
 `MAX-HEAPIFY`过程的运行时间和二叉堆的高度相关。
 
-假设以节点 A[1] 为根的二叉堆具有 n 个节点，那么当 A[1] 的左子树为完全二叉堆，`MAX-HEAPIFY`下一步执行到左子树，且 A[1] 右子树的高度比左子树少一时，运行时间最大。即 $T(n)\leq T(2n/3) + \Theta(1)$，可以求得运行时间为`T(n)=O(log n)`
+假设以节点 A[1] 为根的二叉堆具有 n 个节点，那么当 A[1] 的左子树为完全二叉堆，`MAX-HEAPIFY`下一步执行到左子树，且 A[1] 右子树的高度比左子树少一时，运行时间最大。即 $T(n)\leq T(2n/3) + O(1)$，可以求得运行时间为`T(n)=O(log n)`
 
 **BUILD-MAX-HEAP(A)**
 将一个数组`A[1...n]`转换为最大堆。
@@ -387,7 +402,7 @@ void heap::sort(){
 
 
 ## 快速排序
-原地排序，最坏运行时间为$\Theta(n^2)$，平均运行时间为$\Theta(n\log(n))$，实际中常常优于堆排序。因为其平均性能非常好($O(n lgn)$，且隐含的常数因子非常小)，所以通常是用于排序的最佳实用选择。
+原地排序，最坏运行时间为$O(n^2)$，平均运行时间为$O(n\log(n))$，实际中常常优于堆排序。因为其平均性能非常好($O(n lgn)$，且隐含的常数因子非常小)，所以通常是用于排序的最佳实用选择。
 
 插入排序、归并排序、堆排序和快速排序都是比较排序：通过对数组中的元素进行比较来实现排序。
 
@@ -420,7 +435,7 @@ partition(A, p, r)
 ```
 Partition 过程采用技巧，来实现将数组 A 重排，重拍之后，子数组`A[p...q-1]`中的元素都小于等于`A[q]`小于等于`A[q+1...r]`。返回`q`。
 
-很明显，partition 过程的运行时间为$\Theta(n)$
+很明显，partition 过程的运行时间为$O(n)$
 
 ### 快排性能分析
 快排的运行时间和`partition`过程划分的子数组是否对称有关，而是否对称又与选择哪个元素作为关键字有关。
