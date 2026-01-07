@@ -1,18 +1,34 @@
-```cpp
+```plantuml
+class BaseCompaction {
+    Status prepare_compact() override;
 
-do {
-    std::vector<TabletSharedPtr> tablets_compaction =
-                    _generate_compaction_tasks(compaction_type, data_dirs, check_score);
-    for (const auto& tablet : tablets_compaction) {
-        ...
-        } else if (compaction_type == CompactionType::FULL_COMPACTION) {
-                    tablet->set_last_full_compaction_schedule_time(UnixMillis());
-        }
-        ...
-        Status st = _submit_compaction_task(tablet, compaction_type, false);
+    Status execute_compact() override;
+}
+class CompactionMixin
+class SingleReplicaCompaction
+class Compaction {
+    # Status prepare_compact()
+    # Status execute_compact()
 }
 
 
+CompactionMixin -up-> Compaction
+BaseCompaction -up-> CompactionMixin
+SingleReplicaCompaction -up-> CompactionMixin
+```
 
-StorageEngine::_generate_compaction_tasks
+```cpp
+StorageEngine::_submit_compaction_task(...) {
+    Status st = Tablet::prepare_compaction_and_calculate_permits(compaction_type, tablet,
+                                                                 compaction, permits);
+    ...
+    auto status = thread_pool->submit_func([tablet, compaction = std::move(compaction),
+                                                compaction_type, permits, force, this]() {
+                                                    ...});
+}
+
+Tablet::prepare_compaction_and_calculate_permits (...) {
+    compaction = std::make_shared<CumulativeCompaction>(tablet->_engine, tablet);
+    Status res = compaction->prepare_compact();
+}
 ```

@@ -30,8 +30,10 @@ BetaRowsetReader::get_segment_iterators(...) {
 
 ```
 
+## schema change
 
+分为 heavy schema change 和 light schema change。
 
-### light schema change
+hsc 会生成新的 tablet（新的 tablet id，新的 schema hash）。
 
-`BaseRowsetBuilder::_build_current_tablet_schema` 这里去更新 tablet schema
+lsc 不会生成新的 tablet，直接在 fe 更新内存以及 fe 中持久化的 meta。当查询/导入行为发生时，fe 会在 plan 中带上新的 schema，当 be 接收到新的 schema 之后会更新 be 内存中的数据结构。
