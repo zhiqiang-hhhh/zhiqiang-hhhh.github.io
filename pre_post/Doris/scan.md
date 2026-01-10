@@ -21,8 +21,6 @@
 
 <!-- /code_chunk_output -->
 
-
-
 ref
 * https://blog.csdn.net/SHWAITME/article/details/136155008?spm=1001.2014.3001.5502
 * https://mp.weixin.qq.com/s/vc5gafqHyxKvMiLiYVyRLQ
@@ -162,7 +160,7 @@ show tablets from debug_storage
 [hezhiqiang@VM-10-8-centos 1366655391]$ ls
 0200000000000034024daaf90dc78b9be0dee7c6939de5a8_0.dat  020000000000003c024daaf90dc78b9be0dee7c6939de5a8_0.dat
 ```
-我的猜测：每次 insert/compaction 会生成一个新的 rowset ID。
+每次 insert/compaction 会生成一个新的 rowset ID。
 
 ###
 ```plantuml
