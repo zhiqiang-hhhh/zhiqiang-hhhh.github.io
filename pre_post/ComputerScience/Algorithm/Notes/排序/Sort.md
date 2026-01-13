@@ -8,6 +8,8 @@
   - [插入排序](#插入排序)
   - [归并排序(Merge Sort)](#归并排序merge-sort)
   - [堆排序](#堆排序)
+    - [数组下标与孩子/父亲的计算](#数组下标与孩子父亲的计算)
+    - [MAX-HEAPIFY(A, i)：把一个点“下沉”回到正确位置](#max-heapifya-i把一个点下沉回到正确位置)
     - [优先队列(Priority queues)](#优先队列priority-queues)
   - [快速排序](#快速排序)
     - [Partition 过程](#partition-过程)
@@ -242,38 +244,49 @@ ListNode* Solution::merge(ListNode* l1, ListNode* l2){
 归并排序的运行时间在最好和最坏情况下都是$O(n\log{n})$，但是其 Merge 过程需要额外的空间。
 
 ## 堆排序
-运行时间$O(n\log n)$，原地排序。
+目标：把数组原地排序（升序），时间复杂度 $O(n\log n)$。
 
-二叉堆(binary heap)，是一个数组对象，可以被视为一个完全二叉树。
+二叉堆（binary heap）可以用数组表示，并视为一棵完全二叉树。
 
-给定A[i]：
-* PARENT(i):
-  return $\lfloor i/2 \rfloor$
-* LEFT[i]:
-  return $2i$
-* RIGHT[i]:
-  return 2i + 1
+二叉堆的性质：
+1. **最大堆性质**：任意节点的值 $\ge$ 其左右孩子的值（所以堆顶是最大值）。
+2. **heap-size**：当前“堆的有效长度”（排序过程中会逐渐缩小）。
+3. 两个基本过程：`MAX-HEAPIFY`（修堆/下沉）和 `BUILD-MAX-HEAP`（建堆）。
 
-上述计算通过左移右移结合宏定义来实现会比较好。
+### 数组下标与孩子/父亲的计算
+下面的伪代码采用 CLRS 常用的 **1-based** 下标（A[1] 是堆顶）：
 
-**MAX-HEAPIFY(A, i)**
-该过程假定以`LEFT[i]`和`RIGHT[i]`为根的两棵二叉树满足最大堆性质，而元素`A[i]`可能小于其孩子节点，违背了大顶堆的性质。
+- PARENT(i) = $\lfloor i/2 \rfloor$
+- LEFT(i) = $2i$
+- RIGHT(i) = $2i + 1$
 
-    MAX-HEAPIFY(A, i)
-        l = LEFT(i)
-        r = RIGHT(i)
-        if l <= A.heap-size and A[l] > A[i]
-            larger = l
-        else lerger = i
-        if r <= A.heap-size and A[r] > A[larger]
-            larger = r
-        if larger != i
-            exchange A[i] with A[larger]
-            MAX-HEAPIFY(A, larger)
+C++ 实现采用 **0-based** 下标（A[0] 是堆顶），因此宏是：
 
-`MAX-HEAPIFY`过程的运行时间和二叉堆的高度相关。
+- parent(i) = $\lfloor (i-1)/2 \rfloor$
+- left(i) = $2i + 1$
+- right(i) = $2i + 2$
 
-假设以节点 A[1] 为根的二叉堆具有 n 个节点，那么当 A[1] 的左子树为完全二叉堆，`MAX-HEAPIFY`下一步执行到左子树，且 A[1] 右子树的高度比左子树少一时，运行时间最大。即 $T(n)\leq T(2n/3) + O(1)$，可以求得运行时间为`T(n)=O(log n)`
+### MAX-HEAPIFY(A, i)：把一个点“下沉”回到正确位置
+前提：以 `LEFT(i)`、`RIGHT(i)` 为根的两个子树都已经满足最大堆性质；但 `A[i]` 可能比孩子小。
+
+做法：从 `i`、`left`、`right` 中选最大者，如果最大不是 `i`，就交换并递归/迭代到下一层。
+```
+MAX-HEAPIFY(A, i)
+    l = LEFT(i)
+    r = RIGHT(i)
+    if l <= A.heap-size and A[l] > A[i]
+        larger = l
+    else
+        larger = i
+    if r <= A.heap-size and A[r] > A[larger]
+        larger = r
+    if larger != i
+        exchange A[i] with A[larger]
+        MAX-HEAPIFY(A, larger)
+```
+复杂度：最多向下走堆的高度 $h=\lfloor\log_2 n\rfloor$ 层，所以
+
+$$T(\texttt{MAX-HEAPIFY}) = O(\log n)$$
 
 **BUILD-MAX-HEAP(A)**
 将一个数组`A[1...n]`转换为最大堆。
@@ -285,7 +298,12 @@ ListNode* Solution::merge(ListNode* l1, ListNode* l2){
         for i = A.length/2 downto 1
             MAX-HEAPIFY(A, i)
 
-该过程粗略来看满足$O(n\log n)$，但是该上界并不是紧上界。**实际上的紧上界是$O(h)$，$h=log(n)$**，所以可以以线性时间构造一个最大堆。
+这个过程“看起来”像调用了 $n/2$ 次 `MAX-HEAPIFY`，于是有人会误以为是 $O(n\log n)$。
+但更准确的结论是：
+
+$$T(\texttt{BUILD-MAX-HEAP}) = O(n)$$
+
+直觉：靠近叶子的节点高度很小（下沉步数少），只有极少数节点高度接近 $\log n$，把所有节点的“可下沉层数”加起来是线性的。
 ```c++
 #include <iostream>
 #include <memory>
@@ -346,9 +364,13 @@ void heap::max_heapify(std::shared_ptr<std::vector<int>> spV, size_t i) {
 ```
 
 **HEAPSORT**
-对于一个满足大顶堆性质的数组，其最大元素位于`A[1]`，交换`A[1]`和`A[n]`，同时令`A.heap-size - 1`。就可以将最大元素节点从大顶堆中移出，同时大顶堆是一个递归的定义，意味着根节点的两个子堆也满足大顶堆的性质。而根节点已经被交换过，所以根节点本身可能不满足大顶堆的性质，那么调用 **MAX-HEAPIFY(A, 1)** 过程就可以重新让数组满足大顶堆。
+有了最大堆后，排序就是反复“取最大值并缩堆”：
 
-迭代上述过程，直到大顶堆中只剩下 1 个元素。
+1. 交换堆顶（最大值）和堆尾 `A[n]`，这样最大值被放到了最终位置。
+2. `heap-size -= 1`，把堆尾（已就位的最大值）从堆里移除。
+3. 堆顶被换成了别的元素，可能破坏最大堆性质，对堆顶执行 `MAX-HEAPIFY` 重新修堆。
+
+重复直到堆里只剩 1 个元素。
 
     HEAPSORT(A)
         BUILD-MAX-HEAP(A)
