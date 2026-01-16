@@ -129,3 +129,30 @@ Status SegmentFlusher::_create_segment_writer(
     }
 }
 ```
+### 数据流
+导入流程中涉及到一些数据结构的转换：
+1. CSV -> Block
+2. Block -> MemTable
+3. MemTable -> Segment
+
+导入流程也是 Pipeline 的一部分，因此用户输入的 csv 格式首先会在接入的 BE 上转换成 Doris 查询引擎用到内存列式存储结构 Block。
+Block 在算子之间流转，一直流动到 TableSink 算子。Doris 的数据模型是基于 Tablet 的，因此一个需要解决的问题是决定第 n 行应该属于哪一个 Tablet，这一步在 TableSink 算子的 Sink 步骤里完成。得到的结果是如下的数据结构
+```cpp
+struct Rows {
+    int64_t partition_id;
+    int64_t index_id;
+    DorisVector<uint32_t> row_idxes;
+};
+
+using RowsForTablet = std::unordered_map<int64_t, Rows>;
+```
+RowsForTablet 配合 Block，就可以知道每一行与其对应的 Tablet 的映射关系。
+
+#### MemTable
+MemTable 的生成位置有两个可选的方案：
+1. 在 TableSink 算子生成每一个 Tablet 的 MemTable，Flush 到当前 BE 后生成 Segment 文件，再通过网络把 Segment 文件发送到它应该属于的 BE 上。
+2. 在 TableSink 算子得到 RowsForTablet 之后，通过网络把数据 shuffle 到对应的 BE，然后在对应的 BE 上生成 Segment。有副本的时，Segment 生成后还需要发送到相关的副本节点。
+
+在 Local 部署模式下，Doris 默认采用的是第一种方式，而在 Cloud 模式下 Doris 采用的是第二种方式（注意 Cloud 模式没有副本，因此不需要 Segment 分发的逻辑）。
+
+
