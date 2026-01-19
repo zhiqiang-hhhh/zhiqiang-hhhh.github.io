@@ -14,6 +14,7 @@
   - [快速排序](#快速排序)
     - [Partition 过程](#partition-过程)
     - [快排性能分析](#快排性能分析)
+    - [三路快排](#三路快排)
   - [线性时间排序](#线性时间排序)
     - [计数排序](#计数排序)
     - [基数排序](#基数排序)
@@ -451,7 +452,7 @@ partition(A, p, r)
     for j=p to r-1
         do if A[j] <= x
             then i = i + 1 // i = i + 1 后，i 为第一个大于等于 key 元素的位置               
-                exchange(A[i], A[j])// exchange 后，i 位置的元素变成了小于等于 key 的“最后”一个元素 
+            exchange(A[i], A[j])// exchange 后，i 位置的元素变成了小于等于 key 的“最后”一个元素 
     //  将 key 值复位
     exchange(A[i+1], A[r])
     return i+1
@@ -566,6 +567,38 @@ ListNode* Solution::partition(ListNode* head){
     return res;
 }
 ```
+### 三路快排
+最基础的快排使用固定位置的元素作为 pivot 进行 partition 的参照物，这种算法对于有序/倒序数组的时间复杂度为 O(n^2)，改进方法是使用 random 的 pivot。
+random 的 pivot 对于全相等数组依然是 O(n^2) 的时间复杂度，解决办法是使用三路 partition：把数组切分为 
+* < pivot
+* = pivot
+* `>` pivot
+
+的三个区间。
+```cpp
+void quickSort(vector<int>& nums, int l, int r) {
+    if (l >= r) return;
+
+    // +1 确保存在将最后一个元素选为 pivot 的可能
+    int pivot = nums[l + rand() % (r - l + 1)];
+    // lt, gt 把区间分为三个分段，小于，等于，大于
+    int lt = l, i = l, gt = r;
+
+    // 
+    while (i <= gt) {
+        if (nums[i] < pivot)
+            swap(nums[lt++], nums[i++]);
+        else if (nums[i] > pivot)
+            swap(nums[i], nums[gt--]);
+        else
+            i++;
+    }
+
+    quickSort(nums, l, lt - 1);
+    quickSort(nums, gt + 1, r);
+}
+```
+
 ## 线性时间排序
 **对于包含 n 个元素的输入序列来说，任何比较排序在最坏情况下都要经过Ω(n lgn)次比较**。通过决策树模型证明。
 
