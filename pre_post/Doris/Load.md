@@ -36,7 +36,7 @@ Doris 的“事务”（用户侧）本质是：把一批新数据作为整体�
 * publish/切换阶段必须原子、可持久化、可恢复（决定可见性）
 * compaction 虽然不是用户事务，但在元数据上同样遵循“先生成新 rowset → 再原子替换 → 旧的变 stale → 异步回收”
 
-### 文件结构
+### 文件目录结构
 ```text
 ShardId
     |
@@ -148,6 +148,44 @@ using RowsForTablet = std::unordered_map<int64_t, Rows>;
 ```
 RowsForTablet 配合 Block，就可以知道每一行与其对应的 Tablet 的映射关系。
 
+MemTable -> Segment 的流程是在 MemTable 的 Flush 流程里完成的，这个转换有三个触发点：
+
+1. **MemTable::need_flush() 触发** - 当 memtable 满时
+
+在 memtable_writer.cpp#L140：
+```cpp
+if (UNLIKELY(_mem_table->need_flush())) {
+    LOG_INFO("Going to flush memtable: tablet_id={}, memtable size: {}",
+             _req.tablet_id, PrettyPrinter::print_bytes(_mem_table->memory_usage()));
+    RETURN_IF_ERROR(_flush_memtable());
+}
+```
+这是在每次 `write()` 写入数据后检查的，当 memtable 内存达到阈值时触发。
+
+2. **数据消费完时触发** - 在 `close()` 时
+在 memtable_writer.cpp#L246：
+```cpp
+Status MemTableWriter::close() {
+    ...
+    auto s = _flush_memtable_async();  // 强制 flush 剩余的 memtable
+    {
+        std::lock_guard<std::mutex> lm(_mem_table_ptr_lock);
+        _mem_table.reset();
+    }
+    _is_closed = true;
+    ...
+}
+```
+当数据写入完成后调用 `close()`，会把当前 memtable（即使没满）也 flush 掉。
+
+3. 第三个触发点：**全局内存压力触发** - 在 `MemTableMemoryLimiter::_flush_active_memtables()` 中，当系统内存压力大时，会主动 flush 一些 memtable 来释放内存。
+
+
+
+
+
+
+
 #### MemTable
 MemTable 的生成位置有两个可选的方案：
 1. 在 TableSink 算子生成每一个 Tablet 的 MemTable，Flush 到当前 BE 后生成 Segment 文件，再通过网络把 Segment 文件发送到它应该属于的 BE 上。
@@ -156,3 +194,71 @@ MemTable 的生成位置有两个可选的方案：
 在 Local 部署模式下，Doris 默认采用的是第一种方式，而在 Cloud 模式下 Doris 采用的是第二种方式（注意 Cloud 模式没有副本，因此不需要 Segment 分发的逻辑）。
 
 
+### Segment 文件的生成步骤
+```text
+// 第一阶段：写入数据到内存
+for each input_row_batch {
+    for each column {
+        while (has_more_rows_in_batch) {
+            append_rows_to_page_builder(rows)
+            
+            if (page_builder.is_page_full()) {
+                // finish_current_page() 内部做以下操作：
+                page_builder.finish()     // 编码当前 page
+                compress_page_body()       // 压缩编码后的 page
+                push_page_to_memory_list() // 将压缩页推入内存链表 _pages
+                page_builder.reset()       // 重置 page builder
+            }
+        }
+    }
+    
+    if (segment needs flush) {  // 行数达到 max_rows_per_segment 或大小达到限制
+        goto flush_segment
+    }
+}
+
+// 第二阶段：Segment 刷盘 (finalize)
+flush_segment:
+    // 1. finalize_columns_data()
+    for each column_writer {
+        column_writer.finish()    // 刷完最后一个未满的 page
+    }
+    
+    for each column_writer {
+        write_data_page // 遍历每个列的 page list，下刷到 segment 文件
+    }
+    
+    // 2. finalize_columns_index()
+    write_ordinal_index()         // 写 ordinal 索引
+    write_zone_map()              // 写 zone map 索引
+    write_inverted_index()        // 写倒排索引
+    write_bloom_filter_index()    // 写布隆过滤器索引
+    write_short_key_index()       // 写 short key 索引
+    write_primary_key_index()     // 写主键索引 (MOW表)
+    
+    // 3. finalize_footer()
+    write_segment_footer()        // 写 segment footer (元信息)
+```
+
+#### 不同 PageBuilder 的判断逻辑
+
+| PageBuilder 类型 | 判断条件 | 说明 |
+|-----------------|---------|------|
+| **PlainPageBuilder** (定长类型) | `_remain_element_capacity == 0` | 按**元素个数**判断，`capacity = data_page_size / sizeof(type)` |
+| **BitshufflePageBuilder** | `_remain_element_capacity == 0` | 同上 |
+| **BinaryPlainPageBuilder** (变长类型) | `_size_estimate > data_page_size` | 按**字节大小**判断 |
+| **RlePageBuilder** | `_rle_encoder.len() >= data_page_size` | 按压缩后**字节大小**判断 |
+
+### 举例说明
+
+假设 `data_page_size = 64KB`：
+
+```
+INT32 列:  capacity = 64KB / 4 = 16384 行后触发 page full
+INT64 列:  capacity = 64KB / 8 = 8192 行后触发 page full  
+STRING列:  取决于实际字符串大小，可能几百行就满了
+```
+
+每个列独立管理自己的 pages 链表（`std::vector<Page*> _pages`），最后在 `finalize()` 时统一写入磁盘。所以：
+- **同一 segment 的所有列包含相同的行数**
+- **但每个列的 page 数量和每个 page 的行数可能不同**
