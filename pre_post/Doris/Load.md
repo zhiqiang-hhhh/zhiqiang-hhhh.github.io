@@ -8,7 +8,7 @@ Doris 导入流程提供的语意：一次导入完全成功或者完全失败�
 
 - 写入阶段（txn 进行中）
 
-BE 接收数据，生成 segment 文件，形成一个“候选 rowset”。
+BE 接收数据，生成一组 segment 文件，形成一个“候选 rowset”。
 这时候它的元数据处于 pending/非可见 状态：即使 BE 已经写出了数据文件，查询也不会读到它。
 BE/FE 会记录“这个 txn_id 在哪些 tablets 上写了哪些东西”的跟踪信息（用于 commit/publish 时对齐）。
 - Commit（单个BE执行成功）
@@ -18,7 +18,7 @@ BE/FE 会记录“这个 txn_id 在哪些 tablets 上写了哪些东西”的跟
 - Publish（真正让数据可见的元数据原子切换）
 
 FE 下发 publish 任务到各个 BE：为每个 tablet 分配要发布的 version。
-BE 做几件关键的元数据动作：
+BE 做几个关键的元数据动作：
 把 rowset 标记为 visible（绑定到目标 version）。
 持久化 rowset_meta（以及 MOW 的 delete bitmap 等必要信息）。
 更新 tablet 的版本视图：把“新版本”纳入可见集合。
