@@ -130,10 +130,90 @@ Status SegmentFlusher::_create_segment_writer(
 }
 ```
 ### 数据流
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  【发送端 BE】- Pipeline 执行线程 (PipelineTask 所在线程)                              │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  VTabletWriter::write()                                                             │
+│       ↓                                                                             │
+│  VNodeChannel::add_block() → 将 block 放入 _pending_blocks 队列                      │
+│                                                                                     │
+│  ═══════════════════════════════【线程切换 ①】═══════════════════════════════════════ │
+│                               ↓                                                     │
+│  _send_batch_thread (bthread)  ← periodic_send_batch() 独立 bthread 轮询            │
+│       ↓                                                                             │
+│  VNodeChannel::try_send_pending_block()                                             │
+│       ↓                                                                             │
+│  block.serialize() → PTabletWriterAddBlockRequest                                   │
+│       ↓                                                                             │
+│  _stub->tablet_writer_add_block(request)  ← brpc 异步调用                            │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        │  【跨进程 RPC ★】
+                                        │  brpc / HTTP
+                                        ↓
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  【接收端 BE】- brpc IO 线程                                                          │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  PInternalService::tablet_writer_add_block()  ← brpc worker 线程接收                 │
+│       ↓                                                                             │
+│  ═══════════════════════════════【线程切换 ②】═══════════════════════════════════════ │
+│                               ↓                                                     │
+│  _heavy_work_pool.try_offer([task]...)  ← 提交到 HeavyWorkPool 线程池               │
+│       ↓                                                                             │
+│  HeavyWorkPool 工作线程执行:                                                         │
+│       ↓                                                                             │
+│  LoadChannelMgr::add_batch()                                                        │
+│       ↓                                                                             │
+│  LoadChannel::add_batch()                                                           │
+│       ↓                                                                             │
+│  TabletsChannel::add_batch()                                                        │
+│       │                                                                             │
+│       ├── send_data.deserialize(request.block())  ← Block 反序列化                  │
+│       │                                                                             │
+│       └── _write_block_data()                                                       │
+│               ↓                                                                     │
+│           writer->write(&send_data, row_idxs)  ← 遍历每个 tablet                    │
+│               ↓                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐   │
+│  │ DeltaWriter::write()                                                        │   │
+│  │      ↓                                                                      │   │
+│  │ MemTableWriter::write(block, row_idxs)                                      │   │
+│  │      ↓                                                                      │   │
+│  │ _mem_table->insert(block, row_idxs)  ★ 数据写入 MemTable                    │   │
+│  │      ↓                                                                      │   │
+│  │ _input_mutable_block.add_rows()  ← 行级别数据拷贝                            │   │
+│  │      ↓                                                                      │   │
+│  │ [如果 MemTable 满了]                                                        │   │
+│  │      ↓                                                                      │   │
+│  │ _flush_memtable_async()                                                     │   │
+│  │      ↓                                                                      │   │
+│  │ _flush_token->submit(memtable)                                              │   │
+│  └─────────────────────────────────────────────────────────────────────────────┘   │
+│                                        │                                           │
+│  ═══════════════════════════════【线程切换 ③】═══════════════════════════════════════ │
+│                                        ↓                                           │
+│  MemtableFlushPool 工作线程执行 (或 WorkloadGroup 的 flush pool):                    │
+│       ↓                                                                            │
+│  MemtableFlushTask::run()                                                          │
+│       ↓                                                                            │
+│  MemTable::flush() → Segment 文件写入磁盘                                           │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+
+
+
 导入流程中涉及到一些数据结构的转换：
 1. CSV -> Block
 2. Block -> MemTable
 3. MemTable -> Segment
+
+ps: MemTable 这个对象实际上可以被消除（只有在导入的时候用到，实际查询/Compaction 的时候没有 MemTable 的概念）。
 
 导入流程也是 Pipeline 的一部分，因此用户输入的 csv 格式首先会在接入的 BE 上转换成 Doris 查询引擎用到内存列式存储结构 Block。
 Block 在算子之间流转，一直流动到 TableSink 算子。Doris 的数据模型是基于 Tablet 的，因此一个需要解决的问题是决定第 n 行应该属于哪一个 Tablet，这一步在 TableSink 算子的 Sink 步骤里完成。得到的结果是如下的数据结构
