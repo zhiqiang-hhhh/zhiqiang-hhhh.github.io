@@ -192,8 +192,22 @@ struct KeyRange {
     // whether `upper_key` is included in the range
     bool include_upper;
 }
+
+struct RowCursor {
+    std::unique_ptr<Schema> _schema;
+
+    char* _fixed_buf = nullptr; // point to fixed buf
+    size_t _fixed_len;
+    char* _owned_fixed_buf = nullptr; // point to buf allocated in init function
+
+    char* _variable_buf = nullptr;
+    size_t _variable_len;
+    size_t _string_field_count;
+    char** _long_text_buf = nullptr;
+}
 ```
 
+不论有多少个谓词，KeyRange 只有一个，KeyRang 的 lower_key 保存所有可以被 short key index 加速的谓词的上下界。比如：
 
 ```sql
 CREATE TABLE `debug_pk_comp` (
@@ -213,3 +227,157 @@ SELECT * FROM debug_pk_comp WHERE a = 2 AND b > 1 ORDER BY a,b;
 lower_key: 0&2|0&1, include_lower=0
 upper_key: 0&2|0&2147483647, include_upper=1
 ```
+RowCursor 的 debugString 的格式为
+```text
+is_null&value|is_numm&value...
+```
+因此 lower_key 和 upper_key 的第一组值组成了 `a = 2` 这个谓词，第二组值构成了 `1 < b < 2147483647` 这个谓词。
+#### RowCursor
+注意 RowCursor 这个类的实现里面用来描述key的数据结构是binary，这与short key index 的编码方式有关。
+##### Short Key Index
+假设某张表只有一个排序列，并且该排序列类行为 Int32，如果去实现设计实现一个 shory key index，那么最朴素的想法应该是使用 Int32 的内存格式作为 short key index 的存储格式。这样在读取 short key index 的 page 之后不需要解码，可以直接把这段 binary cast 成一个 cpp 的 Int32，然后去进行计算。
+但是实际情况中，整型数字在内存中的编码有大端法和小端法的区别。
+比如小端法机器上，整数的低字节在前，高字节在后，比如
+```cpp
+值 256 的小端存储：00 01 00 00
+值 1   的小端存储：01 00 00 00
+```
+考虑这样一种情况：在小端法机器上完成写入，在大端法机器上进行计算。那么此时在大端法机器上 cast 得到的 cpp Int32 就不等于写入时候小端法机器的 Int32 了，此时在大端法机器上的 cast 结果为：
+
+
+在大端法机器上直接 cast 这些字节：
+```cpp
+小端写入的 256：00 01 00 00  →  大端法 cast 结果：0x00010000 = 65536
+小端写入的 1  ：01 00 00 00  →  大端法 cast 结果：0x01000000 = 16777216
+```
+此时解码得到的结果就错误了。
+因此 short key index 不仅需要考虑查询时候的速度，还需要去解决跨平台编码解码的问题。
+一种方式是，在 meta 里面记录写入机器的整数编码信息，对于大端法机器上写入的结果，如果查询也在大端机器，那么可以直接 cast binary to Int32，如果是在小端法机器上进行查询，那么就需要做一个转换，转换后再 cast。
+
+还有一种方法是在写入的时候使用与平台无关的二进制编码方式，确保字节序的比较结果与数值比较一致，在查询期间直接基于 binary 进行比较（使用 memcmp），Doris 采用的是第二种方式。
+
+当只有一个排序列的时候，方式一更好，因为首先导入阶段不需要编码没有额外的开销，其次虽然查询期间需要进行一次判断，但是这个开销很小，最差情况下查询与导入在不同平台发生的情况也很少。
+
+但是当涉及到多个排序列的话，情况会发生变化。
+
+**方案一（记录编码信息 + 按需转换）在多列场景下的问题：**
+
+假设有两个排序列 `(a INT, b INT)`，需要比较两个复合键 `(1, 256)` 和 `(1, 1)`：
+1. 首先需要对每个列单独解码（可能需要字节序转换）
+2. 然后逐列比较：先比较 `a`，如果相等再比较 `b`
+3. 比较逻辑变成：
+```cpp
+int compare(Key& k1, Key& k2) {
+    int32_t a1 = decode_with_endian_check(k1.col_a);
+    int32_t a2 = decode_with_endian_check(k2.col_a);
+    if (a1 != a2) return a1 < a2 ? -1 : 1;
+    
+    int32_t b1 = decode_with_endian_check(k1.col_b);
+    int32_t b2 = decode_with_endian_check(k2.col_b);
+    return b1 < b2 ? -1 : (b1 > b2 ? 1 : 0);
+}
+```
+
+随着列数增加，比较开销线性增长，且无法利用 memcmp 的 SIMD 优化。
+
+**方案二（平台无关编码 + memcmp）在多列场景下的优势：**
+
+如果在写入时对每个列都使用大端编码（Big-Endian），那么多列可以直接拼接成一个连续的 binary：
+```cpp
+// 复合键 (1, 256) 的编码：
+// a=1:   00 00 00 01  (大端)
+// b=256: 00 00 01 00  (大端)
+// 拼接后：00 00 00 01 00 00 01 00
+
+// 复合键 (1, 1) 的编码：
+// a=1:   00 00 00 01  (大端)
+// b=1:   00 00 00 01  (大端)
+// 拼接后：00 00 00 01 00 00 00 01
+```
+
+比较时只需要一次 memcmp：
+```cpp
+int compare(Key& k1, Key& k2) {
+    return memcmp(k1.data, k2.data, k1.length);
+}
+```
+
+memcmp 结果：
+```
+00 00 00 01 00 00 01 00  vs  00 00 00 01 00 00 00 01
+                  ↑                         ↑
+                  01 > 00
+→ memcmp 返回正数 → (1, 256) > (1, 1) ✓ 正确！
+```
+
+**多列场景下方案二的优势总结：**
+| 特性 | 方案一 | 方案二 |
+|-----|-------|-------|
+| 比较次数 | O(n)，n为列数 | O(1)，一次 memcmp |
+| SIMD 优化 | 无法利用 | memcmp 可利用 SIMD |
+| 实现复杂度 | 需要知道列数、类型 | 只需知道总长度 |
+| 二分查找 | 每次比较都需解码 | 直接在 binary 上二分 |
+
+因此，Doris 选择方案二，在写入时将排序键编码为平台无关的 binary 格式，查询时直接使用 memcmp 进行比较。
+
+##### Short Key Index 的前缀匹配限制
+
+方案二（memcmp）虽然高效，但它要求 **谓词必须满足排序键的前缀匹配**，否则无法使用 Short Key Index。
+
+假设表的排序键为 `(a, b)`，编码后的 Short Key 为：
+```
+row1: (a=1, b=1)   → 00 00 00 01 | 00 00 00 01
+row2: (a=1, b=256) → 00 00 00 01 | 00 00 01 00
+row3: (a=2, b=1)   → 00 00 00 02 | 00 00 00 01
+row4: (a=2, b=256) → 00 00 00 02 | 00 00 01 00
+```
+
+**Case 1: `WHERE a = 1`（前缀匹配 ✓）**
+
+可以构造 key range：
+```
+lower_key: 00 00 00 01 | 00 00 00 00  (a=1, b=MIN)
+upper_key: 00 00 00 01 | FF FF FF FF  (a=1, b=MAX)
+```
+memcmp 可以快速定位到 row1、row2，Short Key Index 生效。
+
+**Case 2: `WHERE a = 1 AND b > 100`（前缀匹配 ✓）**
+
+可以构造 key range：
+```
+lower_key: 00 00 00 01 | 00 00 00 64  (a=1, b=100)
+upper_key: 00 00 00 01 | FF FF FF FF  (a=1, b=MAX)
+```
+memcmp 可以快速定位到 row2，Short Key Index 生效。
+
+**Case 3: `WHERE b = 256`（跳过第一列，前缀不匹配 ✗）**
+
+问题：`b=256` 的编码 `00 00 01 00` 分散在不同的 `a` 值下：
+```
+row2: 00 00 00 01 | 00 00 01 00  (a=1)
+row4: 00 00 00 02 | 00 00 01 00  (a=2)
+```
+
+如果强行构造 key range，memcmp 比较时会先比较 `a` 列的字节，导致无法精确过滤。
+
+**结论：无法通过 memcmp 精确过滤出 `b=256` 的行，Short Key Index 失效。**
+
+**Case 4: `WHERE b > 100`（跳过第一列，前缀不匹配 ✗）**
+
+同样的问题，`b > 100` 的行分散在不同的 `a` 值下，memcmp 无法跳过不满足条件的行。
+
+**为什么方案一也无法解决这个问题？**
+
+即使使用方案一（逐列比较），也无法利用 Short Key Index，因为：
+1. Short Key Index 是按 `(a, b)` 的**复合顺序**排列的
+2. 当只有 `b` 的谓词时，满足条件的行在 index 中是**不连续**的
+3. 无论用什么比较方式，都无法在 B-tree 类型的索引上做范围查找
+
+**解决方案：**
+
+对于非前缀匹配的谓词，需要其他索引机制：
+1. **Zone Map**：检查每个 page 的 `b` 列 min/max，跳过不可能包含目标值的 page
+2. **Bloom Filter**：快速判断某个 page 是否可能包含 `b=256`
+3. **Inverted Index（倒排索引）**：直接建立 `b` 列的索引，精确定位 rowid
+
+这也是为什么 Doris 除了 Short Key Index 之外，还提供了 Zone Map、Bloom Filter、Inverted Index 等多种索引机制。
